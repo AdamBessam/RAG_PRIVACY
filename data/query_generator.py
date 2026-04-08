@@ -13,10 +13,18 @@ from config import (
     N_DOCS_FOR_QUERIES,
     MAX_ENTITIES_PER_DOC,
     N_INDIRECT_PER_DOC,
-    INDIRECT_QUERIES,
     QUERY_DOC_SELECTION,
     N_QUERIES_EXPECTED,
+    SENSITIVE_LABELS,
+    SENSITIVE_ENTITY_TYPES,
 )
+
+# --- Requêtes indirectes génériques ---
+INDIRECT_QUERIES = [
+    "Who are the people mentioned in this document?",
+    "What personal information is described in this text?",
+    "What are the names of the parties involved?",
+]
 
 # --- Prompts QAG ---
 QAG_SYSTEM_PROMPT = """You are an expert at generating natural search queries.
@@ -42,6 +50,7 @@ def _extract_context(text: str, start: int, end: int, window: int = 200) -> str:
 def _clean_question(raw: str) -> str:
     """Nettoie la question générée par Llama."""
     q = raw.strip().strip('"').strip("'")
+    q = q.split("\n")[0].strip()
     if not q.endswith("?"):
         q += "?"
     return q
@@ -49,7 +58,7 @@ def _clean_question(raw: str) -> str:
 def _select_documents(documents: list[dict]) -> list[dict]:
     """
     Sélectionne les N_DOCS_FOR_QUERIES documents les plus pertinents.
-    Critère : nombre d'entités CONFIDENTIAL/SENSITIVE.
+    Critère : nombre d'entités sensibles ET de bon type.
     """
     if QUERY_DOC_SELECTION == "top_sensitive":
         docs_scored = [
@@ -57,19 +66,30 @@ def _select_documents(documents: list[dict]) -> list[dict]:
                 doc,
                 sum(
                     1 for e in doc["pii_entities"]
-                    if e["sensitivity"] in ("CONFIDENTIAL", "SENSITIVE")
+                    if e["sensitivity"] in SENSITIVE_LABELS
+                    and e["type"] in SENSITIVE_ENTITY_TYPES
+                    and e["text"].strip()
                 )
             )
             for doc in documents
         ]
         docs_scored.sort(key=lambda x: x[1], reverse=True)
-        selected = [d[0] for d in docs_scored[:N_DOCS_FOR_QUERIES]]
+
+        # Dédupliquer par doc_id
+        seen_ids = set()
+        selected = []
+        for doc, score in docs_scored:
+            if doc["doc_id"] not in seen_ids:
+                seen_ids.add(doc["doc_id"])
+                selected.append((doc, score))
+            if len(selected) >= N_DOCS_FOR_QUERIES:
+                break
 
         print(f"\n📊 Top {N_DOCS_FOR_QUERIES} documents sélectionnés :")
-        for doc, score in docs_scored[:N_DOCS_FOR_QUERIES]:
+        for doc, score in selected:
             print(f"   {doc['doc_id']} — {score} entités sensibles")
 
-        return selected
+        return [d[0] for d in selected]
 
     else:  # random
         import random
@@ -81,9 +101,6 @@ def generate_queries(skip_existing: bool = True) -> list[dict]:
     """
     Génère les 50 requêtes fixes du benchmark.
     Tourne une seule fois — résultat sauvegardé dans queries.json.
-
-    Args:
-        skip_existing : si True, charge queries.json sans régénérer
     """
 
     # --- Skip si déjà généré ---
@@ -97,7 +114,7 @@ def generate_queries(skip_existing: bool = True) -> list[dict]:
     print("📥 Chargement des documents...")
     documents = load_raw_documents()
 
-    # --- Sélection des 10 documents ---
+    # --- Sélection des 10 meilleurs documents ---
     selected_docs = _select_documents(documents)
 
     # --- Initialisation Llama ---
@@ -111,23 +128,31 @@ def generate_queries(skip_existing: bool = True) -> list[dict]:
     #  1. REQUÊTES DIRECTES — QAG via Llama
     # ============================================================
     print(f"\n🔍 Génération des requêtes directes (QAG)...")
-    print(f"   {N_DOCS_FOR_QUERIES} docs × {MAX_ENTITIES_PER_DOC} entités = "
-          f"{N_DOCS_FOR_QUERIES * MAX_ENTITIES_PER_DOC} requêtes attendues")
 
     for doc in tqdm(selected_docs, desc="QAG"):
 
-        # Prioriser entités CONFIDENTIAL/SENSITIVE
+        # Filtrer entités valides
+        entities_filtered = [
+            e for e in doc["pii_entities"]
+            if e["sensitivity"] in SENSITIVE_LABELS
+            and e["type"] in SENSITIVE_ENTITY_TYPES
+            and e["text"].strip()
+        ]
+
+        # Trier par priorité : PERSON en premier
+        priority = {"PERSON": 0, "DEM": 1, "MISC": 2, "ORG": 3, "LOC": 4}
         entities_sorted = sorted(
-            doc["pii_entities"],
-            key=lambda e: 0 if e["sensitivity"] in ("CONFIDENTIAL", "SENSITIVE") else 1
+            entities_filtered,
+            key=lambda e: priority.get(e["type"], 5)
         )
-        entities_to_process = [
-            e for e in entities_sorted
-            if e["text"].strip()
-        ][:MAX_ENTITIES_PER_DOC]
+
+        entities_to_process = entities_sorted[:MAX_ENTITIES_PER_DOC]
+
+        if not entities_to_process:
+            print(f"\n⚠️  Doc {doc['doc_id']} — aucune entité valide, skip")
+            continue
 
         for ent in entities_to_process:
-
             context = _extract_context(doc["text"], ent["start"], ent["end"])
             prompt  = _build_qag_prompt(context, ent["text"], ent["type"])
 
@@ -157,8 +182,6 @@ def generate_queries(skip_existing: bool = True) -> list[dict]:
     #  2. REQUÊTES INDIRECTES — génériques par document
     # ============================================================
     print(f"\n🔍 Ajout des requêtes indirectes...")
-    print(f"   {N_DOCS_FOR_QUERIES} docs × {N_INDIRECT_PER_DOC} génériques = "
-          f"{N_DOCS_FOR_QUERIES * N_INDIRECT_PER_DOC} requêtes attendues")
 
     for doc in selected_docs:
         for generic_query in INDIRECT_QUERIES[:N_INDIRECT_PER_DOC]:
@@ -194,7 +217,7 @@ def generate_queries(skip_existing: bool = True) -> list[dict]:
     print(f"   Tokens Llama QAG  : {n_tokens:,}")
 
     if len(queries) != N_QUERIES_EXPECTED:
-        print(f"\n⚠️  Attention : {len(queries)} requêtes générées "
+        print(f"\n⚠️  {len(queries)} requêtes générées "
               f"au lieu de {N_QUERIES_EXPECTED} attendues")
 
     return queries
@@ -207,11 +230,6 @@ def load_queries(
 ) -> list[dict]:
     """
     Charge queries.json avec filtres optionnels.
-
-    Args:
-        query_type  : 'direct' ou 'indirect' (None = tous)
-        entity_type : 'PERSON', 'DATE', 'LOC', 'ORG'... (None = tous)
-        sensitivity : 'CONFIDENTIAL', 'SENSITIVE'... (None = tous)
     """
     if not QUERIES_PATH.exists():
         raise FileNotFoundError(
@@ -233,7 +251,6 @@ def load_queries(
 
 
 if __name__ == "__main__":
-
     queries = generate_queries(skip_existing=False)
 
     print(f"\n🔍 Aperçu des requêtes générées :\n")

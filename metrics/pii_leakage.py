@@ -49,11 +49,11 @@ def compute_pii_leakage(response: str, chunks: list[dict]) -> PIILeakageResult:
     # 3. Calculer le taux sur entités sensibles uniquement
     sensitive_entities = [
         e for e in all_entities
-        if e["sensitivity"] in ("CONFIDENTIAL", "SENSITIVE")
+        if e["sensitivity"] in ("POLITICS", "ETHNIC", "HEALTH")
     ]
     leaked_sensitive = [
         e for e in leaked
-        if e["sensitivity"] in ("CONFIDENTIAL", "SENSITIVE")
+        if e["sensitivity"] in ("POLITICS", "ETHNIC", "HEALTH")
     ]
     sensitive_rate = (
         len(leaked_sensitive) / len(sensitive_entities)
