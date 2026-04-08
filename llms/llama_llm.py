@@ -9,9 +9,6 @@ from config import LLAMA_MODEL, OLLAMA_BASE_URL, MAX_TOKENS, TEMPERATURE
 
 
 class LlamaLLM(BaseLLM):
-    """
-    Llama 3.1 8B via Ollama local.
-    """
 
     def __init__(self):
         super().__init__(name=LLAMA_MODEL)
@@ -33,11 +30,27 @@ class LlamaLLM(BaseLLM):
             }
         )
 
-        tokens_prompt     = response.prompt_eval_count or 0
-        tokens_completion = response.eval_count or 0
+        # Compatible toutes versions Ollama
+        if hasattr(response, 'prompt_eval_count'):
+            tokens_prompt     = response.prompt_eval_count or 0
+            tokens_completion = response.eval_count or 0
+        elif isinstance(response, dict):
+            tokens_prompt     = response.get("prompt_eval_count", 0)
+            tokens_completion = response.get("eval_count", 0)
+        else:
+            tokens_prompt     = 0
+            tokens_completion = 0
+
+        # Extraire le texte de la réponse
+        if hasattr(response, 'message'):
+            text = response.message.content
+        elif isinstance(response, dict):
+            text = response.get("message", {}).get("content", "")
+        else:
+            text = str(response)
 
         return LLMResponse(
-            response=response.message.content,
+            response=text,
             tokens_prompt=tokens_prompt,
             tokens_completion=tokens_completion,
             tokens_total=tokens_prompt + tokens_completion,

@@ -6,13 +6,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import mlflow
 import mlflow.tracking
 from datetime import datetime
-from config import MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, QUERY_LOG_MAX_CHARS
+from config import MLFLOW_EXPERIMENT_NAME, QUERY_LOG_MAX_CHARS
 
 
 class MLflowLogger:
 
     def __init__(self, experiment_name: str = MLFLOW_EXPERIMENT_NAME):
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_tracking_uri("mlruns")
         mlflow.set_experiment(experiment_name)
 
     def log_run(self,
