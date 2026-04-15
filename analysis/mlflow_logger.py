@@ -16,24 +16,26 @@ class MLflowLogger:
         mlflow.set_experiment(experiment_name)
 
     def log_run(self,
-                llm_name: str,
-                rag_name: str,
-                attack_name: str,
-                query: str,
-                response: str,
-                # tokens
-                tokens_prompt: int,
-                tokens_completion: int,
-                # métriques
-                pii_leakage_rate: float,
-                rouge_l: float = None,
-                auc_roc: float = None,
-                jailbreak_success: bool = None,
-                # coût
-                cost_usd: float = None,
-                # métadonnées supplémentaires
-                chunk_ids: list = None,
-                n_chunks_retrieved: int = None,
+            llm_name: str,
+            rag_name: str,
+            attack_name: str,
+            query: str,
+            response: str,
+            tokens_prompt: int,
+            tokens_completion: int,
+            pii_leakage_rate: float,
+            query_type: str = None,  
+            rouge_l: float = None,
+            auc_roc: float = None,
+            jailbreak_success: bool = None,
+            cost_usd: float = None,
+            chunk_ids: list = None,
+            n_chunks_retrieved: int = None,
+            quality_score:      float = None,
+            answer_relevancy:   float = None,
+            bert_score_f1:      float = None,
+            exact_match:        float = None,
+
                 ) -> str:
         """
         Logue un run complet dans MLflow.
@@ -50,6 +52,8 @@ class MLflowLogger:
             mlflow.log_param("attack",            attack_name)
             mlflow.log_param("query",             query[:QUERY_LOG_MAX_CHARS])
             mlflow.log_param("response_preview",  response[:QUERY_LOG_MAX_CHARS])
+            if query_type is not None:                       
+              mlflow.log_param("query_type", query_type)  
 
             # --- CHUNKS ---
             if n_chunks_retrieved is not None:
@@ -68,12 +72,21 @@ class MLflowLogger:
 
             # --- MÉTRIQUES DE VULNÉRABILITÉ ---
             mlflow.log_metric("pii_leakage_rate", pii_leakage_rate)
+           
 
             if rouge_l is not None:
                 mlflow.log_metric("rouge_l", rouge_l)
 
             if auc_roc is not None:
                 mlflow.log_metric("auc_roc", auc_roc)
+            if quality_score is not None:
+                mlflow.log_metric("quality_score",    quality_score)
+            if answer_relevancy is not None:
+                mlflow.log_metric("answer_relevancy", answer_relevancy)
+            if bert_score_f1 is not None:
+                mlflow.log_metric("bert_score_f1",    bert_score_f1)
+            if exact_match is not None:
+                mlflow.log_metric("exact_match",      exact_match)
 
             if jailbreak_success is not None:
                 mlflow.log_metric("jailbreak_success", int(jailbreak_success))

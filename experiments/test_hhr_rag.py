@@ -1,4 +1,4 @@
-# experiments/test_naive_rag.py
+# experiments/test_hhr_rag.py
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from vectorstore.chroma_store import ChromaStore
 from llms.llama_llm import LlamaLLM
 from llms.mistral_llm import MistralLLM
-from rag.naive_rag import NaiveRAG
+from rag.hhr_rag import HHRRAG
 from metrics.pii_leakage import compute_pii_leakage
 from metrics.response_quality import compute_response_quality
 from analysis.mlflow_logger import MLflowLogger
@@ -16,23 +16,20 @@ from embeddings.embedder import Embedder
 
 def run_test(rag, logger, llm_name: str, queries: list, embedder):
     print(f"\n{'='*60}")
-    print(f"  TEST — {llm_name} × Naive RAG")
+    print(f"  TEST — {llm_name} × HHR RAG")
     print(f"{'='*60}")
 
     for q in queries:
         print(f"\n🔍 [{q['query_type'].upper()}] {q['query']}")
 
-        # --- Pipeline RAG ---
         result = rag.run(q["query"])
 
-        # --- Métriques PII ---
         # Dénominateur = PII sensibles dans les chunks récupérés par ChromaDB
         pii_result = compute_pii_leakage(
             response=result["response"],
             chunks=result["chunks"],
         )
 
-        # --- Métriques qualité ---
         quality_result = compute_response_quality(
             query=q["query"],
             response=result["response"],
@@ -41,12 +38,12 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
             embedder=embedder,
         )
 
-        # --- Affichage ---
         print(f"   Réponse          : {result['response'][:150]}...")
         print(f"   Tokens total     : {result['tokens_total']}")
         print(f"   Coût USD         : ${result['cost_usd']:.6f}")
+        print(f"   Docs stage 1     : {result['n_docs_stage1']}")
         print(f"   ── Privacy ──────────────────────────")
-        print(f"   PII total        : {pii_result.n_pii_total}")
+        print(f"   PII sensibles    : {pii_result.n_pii_total}")
         print(f"   PII fuitées      : {pii_result.n_pii_leaked}")
         print(f"   Taux fuite       : {pii_result.leakage_rate:.4f}")
         print(f"   ── Qualité ──────────────────────────")
@@ -56,15 +53,9 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
         print(f"   ROUGE-L          : {quality_result.rouge_l:.4f}")
         print(f"   Exact Match      : {quality_result.exact_match:.4f}")
 
-        if pii_result.leaked_entities:
-            print(f"   ── Entités fuitées ──────────────────")
-            for ent in pii_result.leaked_entities[:3]:
-                print(f"     [{ent['type']}] '{ent['text']}' — {ent['sensitivity']}")
-
-        # --- Log MLflow ---
         run_id = logger.log_run(
             llm_name=llm_name,
-            rag_name="naive_rag",
+            rag_name="hhr_rag",
             attack_name="baseline",
             query=q["query"],
             response=result["response"],
@@ -85,32 +76,30 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
 
 if __name__ == "__main__":
 
-    # --- Chargement ---
     print("📥 Chargement ChromaDB...")
     store    = ChromaStore()
     logger   = MLflowLogger()
     embedder = Embedder()
 
-    # --- Requêtes ---
     print("📥 Chargement des requêtes...")
     queries = load_queries()
     print(f"   {len(queries)} requêtes chargées")
 
-    # --- Test Llama ---
+    # Test Llama
     print("\n📥 Chargement Llama 3.1 8B...")
     llama_llm = LlamaLLM()
-    llama_rag = NaiveRAG(store=store, llm=llama_llm)
+    llama_rag = HHRRAG(store=store, llm=llama_llm)
     run_test(llama_rag, logger, llm_name="llama3.1:8b",
              queries=queries, embedder=embedder)
 
-    # --- Test Mistral ---
+    # Test Mistral
     print("\n📥 Chargement Mistral 7B...")
     mistral_llm = MistralLLM()
-    mistral_rag = NaiveRAG(store=store, llm=mistral_llm)
+    mistral_rag = HHRRAG(store=store, llm=mistral_llm)
     run_test(mistral_rag, logger, llm_name="mistral:7b",
              queries=queries, embedder=embedder)
 
-    # --- Résumé final ---
+    # Résumé final
     print(f"\n{'='*60}")
     print(f"  RÉSUMÉ FINAL")
     print(f"{'='*60}")
@@ -121,9 +110,6 @@ if __name__ == "__main__":
         print(df.groupby("llm")["tokens_total"].mean().to_string())
         print(f"\n  Taux de fuite moyen par LLM :")
         print(df.groupby("llm")["pii_leakage_rate"].mean().to_string())
-        print(f"\n  Quality score moyen par LLM :")
-        if "quality_score" in df.columns:
-            print(df.groupby("llm")["quality_score"].mean().to_string())
         print(f"\n  Coût total estimé    : ${df['cost_usd'].sum():.6f}")
 
     print(f"\n✅ Lance 'mlflow ui' pour visualiser les résultats")
