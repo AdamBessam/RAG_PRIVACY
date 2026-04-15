@@ -54,7 +54,7 @@ data/neo4j/
 
 # Raw data
 data/raw/
-!data/raw/queries.json
+data/raw/queries.json
 data/*.pkl
 data/*.parquet
 

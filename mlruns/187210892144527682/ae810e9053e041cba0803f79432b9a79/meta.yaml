@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/ae810e9053e041cba0803f79432b9a79/artifacts
+end_time: 1776254469881
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: ae810e9053e041cba0803f79432b9a79
+run_name: llama3.1:8b__graph_rag__baseline__140109
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776254469867
+status: 3
+tags: []
+user_id: adam
