@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/ee3c65e3783a46c4be4e5c774918f814/artifacts
+end_time: 1776255616119
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: ee3c65e3783a46c4be4e5c774918f814
+run_name: mistral:7b__graph_rag__baseline__142016
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776255616105
+status: 3
+tags: []
+user_id: adam
