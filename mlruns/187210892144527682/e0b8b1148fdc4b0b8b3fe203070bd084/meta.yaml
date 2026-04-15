@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bessa/Documents/RAG_Privacy_code/mlruns/187210892144527682/e0b8b1148fdc4b0b8b3fe203070bd084/artifacts
+end_time: 1776183197832
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: e0b8b1148fdc4b0b8b3fe203070bd084
+run_name: mistral:7b__naive_rag__baseline__181317
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776183197663
+status: 3
+tags: []
+user_id: bessa
