@@ -46,8 +46,10 @@ env/
 data/chroma_db/
 data/chroma_db_*
 
+# Neo4j database files (large binary files)
+data/neo4j/
+
 # MLflow
-mlruns/
 .mlflow/
 
 # Raw data
