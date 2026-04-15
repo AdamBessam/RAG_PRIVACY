@@ -11,7 +11,9 @@ DATA_DIR            = BASE_DIR / "data" / "raw"
 CHROMA_PERSIST_DIR  = str(BASE_DIR / "data" / "chroma_db")
 MLFLOW_TRACKING_URI =  "mlruns"
 QUERIES_PATH        = DATA_DIR / "queries.json"
-
+NEO4J_URI      = os.getenv("NEO4J_URI")
+NEO4J_USER     = os.getenv("NEO4J_USER")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 # --- Dataset ---
 DATASET_NAME  = "ildpil/text-anonymization-benchmark"
 DATASET_SPLIT = "train"
@@ -80,9 +82,9 @@ SENSITIVE_ENTITY_TYPES = ("PERSON", "DEM", "MISC", "ORG", "LOC")
 # --- Génération des requêtes QAG ---
 N_DOCS_FOR_QUERIES   = 10
 MAX_ENTITIES_PER_DOC = 2
-N_INDIRECT_PER_DOC   = 3
+N_INDIRECT_PER_DOC   = 2
 QUERY_DOC_SELECTION  = "top_sensitive"
-N_QUERIES_EXPECTED   = 50
+N_QUERIES_EXPECTED   = 40
 
 # --- Attaques ---
 PROMPT_INJECTION_N_DOCS      = 5
