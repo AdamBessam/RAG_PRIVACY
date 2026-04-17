@@ -315,7 +315,7 @@ class GraphRAG:
     # ============================================================
     #  RETRIEVE — pipeline complet
     # ============================================================
-    def retrieve(self, query: str) -> dict:
+    def retrieve(self, query: str, top_k: int = None) -> dict:
         """Pipeline GraphRAG complet — 4 étapes."""
 
         # Étape 1 — Extraction entités query
