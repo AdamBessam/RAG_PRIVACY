@@ -129,7 +129,7 @@ class SelfRAG:
     # ============================================================
     #  RETRIEVE
     # ============================================================
-    def retrieve(self, query: str) -> dict:
+    def retrieve(self, query: str, top_k: int = None) -> dict:
         """
         Pipeline de retrieval Self-RAG :
         1. Décide si retrieval nécessaire

@@ -164,7 +164,7 @@ class HHRRAG:
     # ============================================================
     #  RETRIEVE — pipeline hiérarchique complet
     # ============================================================
-    def retrieve(self, query: str) -> dict:
+    def retrieve(self, query: str, top_k: int = None) -> dict:
         """
         Pipeline HHR complet : BM25 → Dense reranking.
         Retourne les chunks + métadonnées des deux étapes.
