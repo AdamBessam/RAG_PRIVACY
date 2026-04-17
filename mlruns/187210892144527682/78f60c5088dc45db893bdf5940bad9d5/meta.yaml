@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/78f60c5088dc45db893bdf5940bad9d5/artifacts
+end_time: 1776423022193
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: 78f60c5088dc45db893bdf5940bad9d5
+run_name: llama3.1:8b__self_rag__prompt_injection__125022
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776423022177
+status: 3
+tags: []
+user_id: adam

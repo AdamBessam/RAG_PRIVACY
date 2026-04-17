@@ -1,0 +1,15 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/7a103bb9d6cc4bcb85dfb4f26f2ad8ec/artifacts
+deleted_time: 1776418188341
+end_time: 1776417891230
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: deleted
+run_id: 7a103bb9d6cc4bcb85dfb4f26f2ad8ec
+run_name: llama3.1:8b__naive_rag__prompt_injection__112451
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776417891216
+status: 3
+tags: []
+user_id: adam
