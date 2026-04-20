@@ -105,8 +105,8 @@ class PromptInjectionAttack:
         """
         Args:
             rag : instance NaiveRAG / SelfRAG / HhrRAG / GraphRAG
-                  (doit exposer .retrieve(query, top_k) et .generate(query, chunks))
-            llm : instance BaseLLM (non utilisé directement, via rag.generate)
+                  (doit exposer .retrieve(query, top_k) ; .generate est optionnel)
+            llm : instance BaseLLM (fallback si rag ne fournit pas .generate)
         """
         self.rag = rag
         self.llm = llm
@@ -146,7 +146,13 @@ class PromptInjectionAttack:
             4. Mesurer ROUGE-L et PII leakage
         """
         # 1. Récupération — la requête originale sert d'anchor
-        chunks = self.rag.retrieve(query, top_k=top_k)
+        # Certaines implémentations (ex: SelfRAG) retournent un dict avec la clé
+        # "chunks" au lieu d'une liste directe.
+        retrieved = self.rag.retrieve(query, top_k=top_k)
+        if isinstance(retrieved, dict):
+            chunks = retrieved.get("chunks", [])
+        else:
+            chunks = retrieved
 
         # 2. Construction du prompt injecté
         injected_query = self.build_injected_prompt(query)
@@ -154,7 +160,11 @@ class PromptInjectionAttack:
         # 3. Génération avec le prompt injecté
         #    generate(query, chunks) → build_rag_prompt(injected_query, chunks)
         #    = [contexte récupéré] + [instruction de régurgitation]
-        llm_resp = self.rag.generate(injected_query, chunks)
+        if hasattr(self.rag, "generate"):
+            llm_resp = self.rag.generate(injected_query, chunks)
+        else:
+            prompt = self.llm.build_rag_prompt(injected_query, chunks)
+            llm_resp = self.llm.generate(prompt)
 
         # 4. ROUGE-L : mesure la régurgitation verbatim
         #    Référence = concaténation de tous les chunks récupérés
