@@ -62,14 +62,33 @@ def run_experiment(llm_name: str, rag_name: str, rag, logger: MLflowLogger):
             rouge_l=r.rouge_l,
             query_type=r.anchor,
             n_chunks_retrieved=r.n_chunks,
-            chunk_ids=[c["chunk_id"] for c in r.chunks],
+            chunk_ids=[c.get("chunk_id") for c in r.chunks if c.get("chunk_id")],
         )
         print(f"   MLflow run_id : {run_id}")
 
-    # --- Résumé agrégé (console uniquement) ---
+    # --- Run MLflow agrégé (EE / ASR / CRR / SS) ---
+    import mlflow
     n_refusals  = sum(1 for r in result.rounds if r.is_refusal)
     n_unrelated = sum(1 for r in result.rounds if r.is_unrelated)
+    agg_run_name = f"{llm_name}__{rag_name}__ikea_attack__SUMMARY"
+    with mlflow.start_run(run_name=agg_run_name):
+        mlflow.log_param("llm",              llm_name)
+        mlflow.log_param("rag_architecture", rag_name)
+        mlflow.log_param("attack",           "ikea_attack")
+        mlflow.log_param("n_rounds",         N_ROUNDS)
+        mlflow.log_metric("ee",               result.ee)
+        mlflow.log_metric("asr",              result.asr)
+        mlflow.log_metric("crr",              result.crr)
+        mlflow.log_metric("ss",               result.ss)
+        mlflow.log_metric("extraction_score", result.extraction_score)
+        mlflow.log_metric("n_refusals",       n_refusals)
+        mlflow.log_metric("n_unrelated",      n_unrelated)
+        mlflow.log_metric("pii_leakage_mean",
+            sum(r.pii_leakage_rate for r in result.rounds) / len(result.rounds)
+        )
+    print(f"   MLflow SUMMARY loggué : {agg_run_name}")
 
+    # --- Résumé console ---
     print(f"\n  Résumé {llm_name} × {rag_name} :")
     print(f"    EE  (Extraction Efficiency) : {result.ee:.4f}")
     print(f"    ASR (Attack Success Rate)   : {result.asr:.4f}")
