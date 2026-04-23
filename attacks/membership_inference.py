@@ -21,7 +21,6 @@ from typing import Optional
 import numpy as np
 from sklearn.metrics import roc_auc_score
 
-from rag.naive_rag import NaiveRAG
 from config import TOP_K
 
 
@@ -168,13 +167,11 @@ class MembershipInferenceAttack:
 
     def __init__(
         self,
-        rag:       NaiveRAG,
+        rag,
         prompt_id: int = DEFAULT_PROMPT_ID,
-        top_k:     int = TOP_K,
     ):
         self.rag       = rag
         self.prompt_id = prompt_id
-        self.top_k     = top_k
 
     # ------------------------------------------------------------------
     def query(self, sample: str, is_member: bool) -> MIAResult:
@@ -186,7 +183,7 @@ class MembershipInferenceAttack:
         - The LLM is asked directly whether the sample appears in context.
         """
         attack_prompt = build_attack_prompt(sample, self.prompt_id)
-        rag_result    = self.rag.run(attack_prompt, top_k=self.top_k)
+        rag_result    = self.rag.run(attack_prompt)
 
         raw_response     = rag_result["response"]
         predicted_member = _parse_response(raw_response)

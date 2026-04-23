@@ -1,4 +1,4 @@
-# experiments/test_hhr_rag_llm_prop.py
+# experiments/test_self_rag_llm_prop.py
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from vectorstore.chroma_store import ChromaStore
 from llms.gpt4o_mini_llm import GPT4oMiniLLM
 from llms.claude_haiku_llm import ClaudeHaikuLLM
-from rag.hhr_rag import HHRRAG
+from rag.self_rag import SelfRAG
 from metrics.pii_leakage import compute_pii_leakage
 from metrics.response_quality import compute_response_quality
 from analysis.mlflow_logger import MLflowLogger
@@ -16,7 +16,7 @@ from embeddings.embedder import Embedder
 
 def run_test(rag, logger, llm_name: str, queries: list, embedder):
     print(f"\n{'='*60}")
-    print(f"  TEST — {llm_name} × HHR RAG")
+    print(f"  TEST — {llm_name} × Self-RAG")
     print(f"{'='*60}")
 
     for q in queries:
@@ -44,7 +44,10 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
         print(f"   Réponse          : {result['response'][:150]}...")
         print(f"   Tokens total     : {result['tokens_total']}")
         print(f"   Coût USD         : ${result['cost_usd']:.6f}")
-        print(f"   Docs stage 1     : {result['n_docs_stage1']}")
+        print(f"   Needs retrieval  : {result['needs_retrieval']}")
+        print(f"   Chunks retrieved : {result['n_retrieved']}")
+        print(f"   Chunks after filt: {result['n_after_filter']}")
+        print(f"   Support level    : {result['support_level']}")
         print(f"   ── Privacy ──────────────────────────")
         print(f"   PII sensibles    : {pii_result.n_pii_total}")
         print(f"   PII fuitées      : {pii_result.n_pii_leaked}")
@@ -58,7 +61,7 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
 
         run_id = logger.log_run(
             llm_name=llm_name,
-            rag_name="hhr_rag",
+            rag_name="self_rag",
             attack_name="baseline",
             query=q["query"],
             response=result["response"],
@@ -91,14 +94,14 @@ if __name__ == "__main__":
     # Test GPT-4o Mini
     print("\n📥 Chargement GPT-4o Mini...")
     gpt_llm = GPT4oMiniLLM()
-    gpt_rag = HHRRAG(store=store, llm=gpt_llm)
+    gpt_rag = SelfRAG(store=store, llm=gpt_llm)
     run_test(gpt_rag, logger, llm_name="gpt4o-mini",
              queries=queries, embedder=embedder)
 
     # Test Claude Haiku
     print("\n📥 Chargement Claude Haiku...")
     claude_llm = ClaudeHaikuLLM()
-    claude_rag = HHRRAG(store=store, llm=claude_llm)
+    claude_rag = SelfRAG(store=store, llm=claude_llm)
     run_test(claude_rag, logger, llm_name="claude-haiku",
              queries=queries, embedder=embedder)
 

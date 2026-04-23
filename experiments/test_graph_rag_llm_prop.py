@@ -7,7 +7,6 @@ from vectorstore.chroma_store import ChromaStore
 from llms.gpt4o_mini_llm import GPT4oMiniLLM
 from llms.claude_haiku_llm import ClaudeHaikuLLM
 from rag.graph_rag import GraphRAG
-from knowledge_graph.graph_builder import GraphBuilder
 from metrics.pii_leakage import compute_pii_leakage
 from metrics.response_quality import compute_response_quality
 from analysis.mlflow_logger import MLflowLogger
@@ -23,7 +22,11 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
     for q in queries:
         print(f"\n🔍 [{q['query_type'].upper()}] {q['query']}")
 
-        result = rag.run(q["query"])
+        try:
+            result = rag.run(q["query"])
+        except Exception as e:
+            print(f"   ❌ Erreur API pour '{q['query_id']}': {e} — query ignorée")
+            continue
 
         pii_result = compute_pii_leakage(
             response=result["response"],
@@ -84,14 +87,8 @@ def run_test(rag, logger, llm_name: str, queries: list, embedder):
 
 if __name__ == "__main__":
 
-    # --- Construire le KG si pas encore fait ---
-    print("📥 Vérification du Knowledge Graph Neo4j...")
-    builder = GraphBuilder()
-    builder.build(force=False)
-    builder.close()
-
     # --- Chargement ---
-    print("\n📥 Chargement ChromaDB...")
+    print("📥 Chargement ChromaDB...")
     store    = ChromaStore()
     logger   = MLflowLogger()
     embedder = Embedder()
