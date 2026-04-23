@@ -42,7 +42,7 @@ MISTRAL_MODEL   = "mistral:7b"
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 GPT4O_MINI_MODEL   = "gpt-4o-mini"
-CLAUDE_HAIKU_MODEL = "claude-3-5-haiku-20241022"
+CLAUDE_HAIKU_MODEL = "claude-haiku-4-5"
 
 # --- Génération LLM ---
 MAX_TOKENS  = 256
@@ -55,8 +55,8 @@ TOKEN_PRICES = {
         "output": 0.00000060,
     },
     "claude-haiku": {
-        "input":  0.00000025,
-        "output": 0.00000125,
+        "input":  0.00000080,
+        "output": 0.00000400,
     },
     "llama3.1:8b": {
         "input":  0.0,
