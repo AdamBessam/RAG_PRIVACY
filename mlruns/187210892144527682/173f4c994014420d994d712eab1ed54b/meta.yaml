@@ -1,0 +1,15 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/173f4c994014420d994d712eab1ed54b/artifacts
+deleted_time: 1776855901024
+end_time: 1776850615829
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: deleted
+run_id: 173f4c994014420d994d712eab1ed54b
+run_name: llama3.1:8b__naive_rag__ikea_attack__113655
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776850615809
+status: 3
+tags: []
+user_id: adam
