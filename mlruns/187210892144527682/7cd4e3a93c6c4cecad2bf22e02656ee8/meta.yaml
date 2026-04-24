@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/7cd4e3a93c6c4cecad2bf22e02656ee8/artifacts
+end_time: 1776992330906
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: 7cd4e3a93c6c4cecad2bf22e02656ee8
+run_name: mistral:7b__naive_rag__ikea_attack__025850
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776992330715
+status: 3
+tags: []
+user_id: bessa

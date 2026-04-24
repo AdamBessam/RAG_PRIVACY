@@ -583,7 +583,13 @@ class IKEAAttack:
             # ④ Envoyer au RAG
             retrieval = self.rag.retrieve(query, top_k=self.top_k)
             chunks    = self._extract_chunks(retrieval)
-            llm_resp  = self.rag.generate(query, chunks)
+            # NaiveRAG expose generate(query, chunks) ; SelfRAG / HHRRAG / GraphRAG
+            # ne l'ont pas → on génère directement via self.llm.
+            if hasattr(self.rag, 'generate'):
+                llm_resp = self.rag.generate(query, chunks)
+            else:
+                prompt   = self.llm.build_rag_prompt(query, chunks)
+                llm_resp = self.llm.generate(prompt)
             response  = llm_resp.response
 
             # ⑤ Classifier la réponse

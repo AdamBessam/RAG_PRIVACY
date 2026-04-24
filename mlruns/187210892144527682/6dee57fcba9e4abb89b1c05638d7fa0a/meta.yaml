@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/6dee57fcba9e4abb89b1c05638d7fa0a/artifacts
+end_time: 1777033748012
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: 6dee57fcba9e4abb89b1c05638d7fa0a
+run_name: gpt4o-mini__graph_rag__ikea_attack__142907
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777033747810
+status: 3
+tags: []
+user_id: bessa
