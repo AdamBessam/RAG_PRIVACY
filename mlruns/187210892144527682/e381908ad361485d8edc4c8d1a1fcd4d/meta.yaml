@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/e381908ad361485d8edc4c8d1a1fcd4d/artifacts
+end_time: 1777036122902
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: e381908ad361485d8edc4c8d1a1fcd4d
+run_name: claude-haiku__graph_rag__ikea_attack__150842
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777036122687
+status: 3
+tags: []
+user_id: bessa
