@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/aa3ef6cc976349ffb81fa365f89dd06c/artifacts
+end_time: 1777258979102
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: aa3ef6cc976349ffb81fa365f89dd06c
+run_name: llama3.1:8b__hhr_rag__dgea__050258
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777258978862
+status: 3
+tags: []
+user_id: bessa

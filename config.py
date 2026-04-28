@@ -9,7 +9,7 @@ load_dotenv()
 BASE_DIR            = Path(__file__).parent
 DATA_DIR            = BASE_DIR / "data" / "raw"
 CHROMA_PERSIST_DIR  = str(BASE_DIR / "data" / "chroma_db")
-MLFLOW_TRACKING_URI = str(BASE_DIR / "mlruns")  # Chemin absolu pour compatibilité Windows
+MLFLOW_TRACKING_URI = (BASE_DIR / "mlruns").as_uri()  # file:///... pour compatibilité Windows
 QUERIES_PATH        = DATA_DIR / "queries.json"
 NEO4J_URI      = os.getenv("NEO4J_URI")
 NEO4J_USER     = os.getenv("NEO4J_USER")
