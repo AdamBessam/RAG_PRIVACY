@@ -35,6 +35,9 @@ class MLflowLogger:
             answer_relevancy:   float = None,
             bert_score_f1:      float = None,
             exact_match:        float = None,
+            gea_sim:            float = None,
+            n_texts_parsed:     int   = None,
+            n_new_chunks:       int   = None,
 
                 ) -> str:
         """
@@ -90,6 +93,14 @@ class MLflowLogger:
 
             if jailbreak_success is not None:
                 mlflow.log_metric("jailbreak_success", int(jailbreak_success))
+
+            # --- MÉTRIQUES DGEA ---
+            if gea_sim is not None:
+                mlflow.log_metric("gea_sim", gea_sim)
+            if n_texts_parsed is not None:
+                mlflow.log_metric("n_texts_parsed", n_texts_parsed)
+            if n_new_chunks is not None:
+                mlflow.log_metric("n_new_chunks", n_new_chunks)
 
             return run.info.run_id
 

@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/073a843bf3e847c9ac450cfe864ea4c6/artifacts
+end_time: 1777335853773
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: 073a843bf3e847c9ac450cfe864ea4c6
+run_name: mistral:7b__hhr_rag__dgea__SUMMARY
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777335853567
+status: 3
+tags: []
+user_id: bessa

@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/1efe4452dc4b4fd0ba5adb2a4ed8d12b/artifacts
+end_time: 1777378592733
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: 1efe4452dc4b4fd0ba5adb2a4ed8d12b
+run_name: claude-haiku__naive_rag__dgea__141632
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777378592295
+status: 3
+tags: []
+user_id: bessa
