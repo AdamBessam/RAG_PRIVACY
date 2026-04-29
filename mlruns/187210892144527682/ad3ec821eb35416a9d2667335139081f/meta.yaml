@@ -1,0 +1,14 @@
+artifact_uri: file:///home/adam/projet_rag/RAG_PRIVACY/mlruns/187210892144527682/ad3ec821eb35416a9d2667335139081f/artifacts
+end_time: 1777426259869
+entry_point_name: ''
+experiment_id: '187210892144527682'
+lifecycle_stage: active
+run_id: ad3ec821eb35416a9d2667335139081f
+run_name: gpt4o-mini__hhr_rag__dgea__033059
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1777426259625
+status: 3
+tags: []
+user_id: bessa
