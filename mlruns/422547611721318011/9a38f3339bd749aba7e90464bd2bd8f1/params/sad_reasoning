@@ -1,0 +1,1 @@
+Phi-3 unavailable (HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=60)), defaulting to SBERT signal

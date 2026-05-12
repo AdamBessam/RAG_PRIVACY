@@ -1,0 +1,2 @@
+"""CPB countermeasure implementation."""
+

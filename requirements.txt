@@ -42,3 +42,8 @@ kaleido==0.2.1
 streamlit
 
 bert-score
+
+# CPB countermeasure
+presidio-analyzer
+presidio-anonymizer
+guardrails-ai
