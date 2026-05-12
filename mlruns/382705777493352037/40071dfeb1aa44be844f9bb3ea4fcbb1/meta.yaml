@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bessa/Documents/RAG_Privacy_code/mlruns/382705777493352037/40071dfeb1aa44be844f9bb3ea4fcbb1/artifacts
+end_time: 1778418504183
+entry_point_name: ''
+experiment_id: '382705777493352037'
+lifecycle_stage: active
+run_id: 40071dfeb1aa44be844f9bb3ea4fcbb1
+run_name: llama3.1:8b__cpb_naive_rag__q_0024
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778418503088
+status: 4
+tags: []
+user_id: bessa

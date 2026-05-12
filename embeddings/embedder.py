@@ -17,9 +17,9 @@ class Embedder:
     """
 
     def __init__(self):
-        print(f"📥 Chargement du modèle d'embedding : {EMBEDDING_MODEL}")
+        print(f"Loading embedding model: {EMBEDDING_MODEL}")
         self.model = SentenceTransformer(EMBEDDING_MODEL)
-        print(f"✅ Modèle chargé")
+        print("Embedding model loaded.")
 
     def embed_texts(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
         """
