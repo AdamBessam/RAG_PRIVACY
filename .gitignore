@@ -105,3 +105,6 @@ checkpoints/
 *.checkpoint
 *.pt
 *.pth
+
+
+.claude/
