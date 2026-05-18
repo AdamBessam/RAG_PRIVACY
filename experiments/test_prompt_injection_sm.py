@@ -300,6 +300,23 @@ def log_run(query_item: dict, result: dict, elapsed_s: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Resume helpers
+# ---------------------------------------------------------------------------
+
+def get_done_query_ids() -> set[str]:
+    """Return query_ids already logged as FINISHED runs in this experiment."""
+    client = mlflow.tracking.MlflowClient()
+    exp = client.get_experiment_by_name(EXPERIMENT_NAME)
+    if exp is None:
+        return set()
+    runs = client.search_runs(
+        experiment_ids=[exp.experiment_id],
+        filter_string="status = 'FINISHED'",
+    )
+    return {r.data.params.get("query_id", "") for r in runs if r.data.params.get("query_id")}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -310,6 +327,10 @@ def main() -> None:
     print("📥 Chargement des requêtes...")
     queries = load_queries()
     print(f"   {len(queries)} requêtes chargées")
+
+    done_ids = get_done_query_ids()
+    if done_ids:
+        print(f"   ⏩ {len(done_ids)} déjà traitées — reprise à partir du point d'arrêt")
 
     print("📦 Connexion à ChromaDB...")
     store = ChromaStore()
@@ -332,7 +353,13 @@ def main() -> None:
     print(f"{'='*65}\n")
 
     for i, query_item in enumerate(queries, start=1):
-        print(f"[{i:02d}/{len(queries)}] {query_item.get('query_id')} ({query_item.get('query_type')})")
+        qid = query_item.get("query_id")
+
+        if qid in done_ids:
+            print(f"[{i:02d}/{len(queries)}] {qid} — skip (déjà traité)")
+            continue
+
+        print(f"[{i:02d}/{len(queries)}] {qid} ({query_item.get('query_type')})")
 
         t0 = time.perf_counter()
         result = run_single(query_item, cpb_rag, top_k=TOP_K)
