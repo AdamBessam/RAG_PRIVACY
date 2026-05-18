@@ -13,6 +13,7 @@ chunks.
 """
 import sys
 import os
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -52,7 +53,7 @@ def _safe_metric(value, default: float = 0.0) -> float:
     return float(value) if value is not None else default
 
 
-def log_query_run(query_item: dict, result: dict) -> None:
+def log_query_run(query_item: dict, result: dict, elapsed_s: float) -> None:
     raw_chunks = result.get("raw_chunks", [])
     masked_chunks = result.get("chunks", [])
 
@@ -125,6 +126,9 @@ def log_query_run(query_item: dict, result: dict) -> None:
         signals = result.get("cpb_query_risk_signals", {})
         mlflow.log_metric("cpb_s5_semantic", _safe_metric(signals.get("s5_semantic")))
 
+        # Response time
+        mlflow.log_metric("response_time_s", elapsed_s)
+
 
 def main() -> None:
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -153,8 +157,11 @@ def main() -> None:
             f"[{i}/{len(queries)}] "
             f"{query_item.get('query_id')} ({query_item.get('query_type')})"
         )
+        t0 = time.perf_counter()
         result = cpb_rag.run(query_item["query"], top_k=TOP_K)
-        log_query_run(query_item, result)
+        elapsed_s = time.perf_counter() - t0
+        print(f"    → {elapsed_s:.1f}s")
+        log_query_run(query_item, result, elapsed_s)
 
     print(f"Done. Runs logged in MLflow experiment: {CPB_EXPERIMENT_NAME}")
 
