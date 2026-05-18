@@ -50,11 +50,6 @@ class CPBNaiveRAG:
 
     def retrieve(self, query: str, top_k: int = TOP_K) -> dict:
         query_risk = self.query_risk_scorer.score(query, session_id=self.session_id)
-        query_pii_result = self.pii_analyzer.analyze(query)
-        masked_query, query_replacements = self.pii_anonymizer.anonymize_text(
-            query,
-            query_pii_result.findings,
-        )
 
         is_suppressed = (
             self.budget_gate.direct_suppression(query_risk.score)
@@ -62,6 +57,11 @@ class CPBNaiveRAG:
         )
         if is_suppressed:
             self.query_risk_scorer.flag_session(self.session_id)
+            # PII analysis needed only for audit fields in suppression case
+            query_pii_result = self.pii_analyzer.analyze(query)
+            masked_query, query_replacements = self.pii_anonymizer.anonymize_text(
+                query, query_pii_result.findings,
+            )
             audit = AuditEntry(
                 query_risk=query_risk.score,
                 max_pii_score=0.0,
@@ -84,7 +84,14 @@ class CPBNaiveRAG:
                 "query_pii_replacements": query_replacements,
             }
 
+        # Retrieve with original query first for best semantic matching,
+        # then mask the query for LLM generation.
         raw_chunks = self.naive_rag.retrieve(query, top_k=top_k)
+
+        query_pii_result = self.pii_analyzer.analyze(query)
+        masked_query, query_replacements = self.pii_anonymizer.anonymize_text(
+            query, query_pii_result.findings,
+        )
         safe_chunks = []
         chunk_decisions = []
         max_pii_score = 0.0
