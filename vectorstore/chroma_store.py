@@ -1,4 +1,10 @@
 # vectorstore/chroma_store.py
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
