@@ -1,0 +1,15 @@
+artifact_uri: file:///home/bessama/Adam/RAG_PRIVACY/mlruns/193385494017113130/388364d614234149a68fd909425d62fa/artifacts
+end_time: 1779180901980
+entry_point_name: ''
+experiment_id: '193385494017113130'
+lifecycle_stage: active
+run_id: 388364d614234149a68fd909425d62fa
+run_name: llama3.1:8b__cpb_naive_rag__dgea__round_023
+run_uuid: 388364d614234149a68fd909425d62fa
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779180901822
+status: 3
+tags: []
+user_id: bessama
