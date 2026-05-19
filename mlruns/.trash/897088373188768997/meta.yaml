@@ -1,0 +1,7 @@
+artifact_location: file:///home/bessama/Adam/RAG_PRIVACY/mlruns/897088373188768997
+creation_time: 1779107922833
+experiment_id: '897088373188768997'
+last_update_time: 1779115562400
+lifecycle_stage: deleted
+name: test_prompt_injection_sm
+tags: {}
