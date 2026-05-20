@@ -82,6 +82,7 @@ experiments_results/
 *.csv
 *.json
 !config.json
+!benchmark_financial/queries.json
 
 # OS
 .DS_Store
