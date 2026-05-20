@@ -45,6 +45,9 @@ env/
 # ChromaDB vectorstore
 data/chroma_db/
 data/chroma_db_*
+chroma_db/
+**/chroma_db/
+*.sqlite3
 
 # Neo4j database files (large binary files)
 data/neo4j/
@@ -79,6 +82,7 @@ experiments_results/
 *.csv
 *.json
 !config.json
+!benchmark_financial/queries.json
 
 # OS
 .DS_Store
