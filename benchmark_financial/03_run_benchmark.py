@@ -91,9 +91,35 @@ def measure_rouge_l(response: str, chunks: list[dict]) -> float:
 
 # ── Runner principal ──────────────────────────────────────────────────────────
 
+CHECKPOINT_FILE = Path(__file__).parent / "checkpoint.json"
+
+
+def load_checkpoint() -> list[dict]:
+    if CHECKPOINT_FILE.exists():
+        with open(CHECKPOINT_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"Checkpoint trouve : {len(data)} queries deja traitees — reprise depuis la query {len(data)}")
+        return data
+    return []
+
+
+def save_checkpoint(results: list[dict]):
+    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False)
+
+
 def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG, analyzer: PresidioPIIAnalyzer) -> list[dict]:
-    results = []
-    for q in tqdm(queries, desc="Benchmark CPB"):
+    results = load_checkpoint()
+    done_ids = {r["query_id"] for r in results}
+    remaining = [q for q in queries if q["query_id"] not in done_ids]
+
+    if not remaining:
+        print("Toutes les queries sont deja traitees (checkpoint complet).")
+        return results
+
+    print(f"{len(remaining)} queries restantes sur {len(queries)} total")
+
+    for q in tqdm(remaining, desc="Benchmark CPB"):
         query_text = q["query"]
         query_type = q["query_type"]
 
@@ -102,25 +128,26 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG, analyzer: PresidioPIIAn
             out = cpb.run(query_text, top_k=TOP_K)
         except Exception as exc:
             results.append({
-                "query_id":          q["query_id"],
-                "query_type":        query_type,
-                "query":             query_text[:300],
-                "response":          f"ERROR: {exc}",
-                "pii_leakage_count": 0,
+                "query_id":           q["query_id"],
+                "query_type":         query_type,
+                "query":              query_text[:300],
+                "response":           f"ERROR: {exc}",
+                "pii_leakage_count":  0,
                 "pii_leakage_binary": 0,
-                "rouge_l":           0.0,
-                "cpb_blocked":       0,
-                "cpb_decision":      "error",
-                "cpb_query_risk":    0.0,
-                "latency_s":         round(time.time() - t0, 3),
+                "rouge_l":            0.0,
+                "cpb_blocked":        0,
+                "cpb_decision":       "error",
+                "cpb_query_risk":     0.0,
+                "latency_s":          round(time.time() - t0, 3),
             })
+            save_checkpoint(results)
             continue
 
         latency = round(time.time() - t0, 3)
-        response    = out.get("response", "")
-        decision    = out.get("cpb_response_guard_decision", out.get("cpb_sad_decision", "unknown"))
-        query_risk  = out.get("cpb_query_risk", 0.0)
-        raw_chunks  = out.get("raw_chunks", [])
+        response   = out.get("response", "")
+        decision   = out.get("cpb_response_guard_decision", out.get("cpb_sad_decision", "unknown"))
+        query_risk = out.get("cpb_query_risk", 0.0)
+        raw_chunks = out.get("raw_chunks", [])
 
         blocked = int(decision in ("direct_suppression", "all_chunks_suppressed"))
 
@@ -140,7 +167,9 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG, analyzer: PresidioPIIAn
             "cpb_query_risk":     round(float(query_risk), 4),
             "latency_s":          latency,
         })
+        save_checkpoint(results)
 
+    CHECKPOINT_FILE.unlink(missing_ok=True)
     return results
 
 
