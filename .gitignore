@@ -83,6 +83,7 @@ experiments_results/
 *.json
 !config.json
 !benchmark_financial/queries.json
+benchmark_financial/checkpoint.json
 
 # OS
 .DS_Store
