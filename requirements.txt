@@ -47,3 +47,6 @@ bert-score
 presidio-analyzer
 presidio-anonymizer
 guardrails-ai
+
+# Test contre-mesure interface
+pypdf
