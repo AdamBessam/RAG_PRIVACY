@@ -2,6 +2,10 @@
 ChromaStore isolé pour le benchmark financier.
 Utilise le répertoire benchmark_financial/chroma_db/ au lieu du chroma_db racine du projet.
 """
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
 import json
 import sys
 from pathlib import Path
