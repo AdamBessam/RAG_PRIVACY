@@ -8,7 +8,6 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Test Contre-Mesure CPB",
-    page_icon="🔒",
     layout="wide",
 )
 
@@ -16,7 +15,6 @@ st.set_page_config(
 _DEFAULTS = {
     "indexed": False,
     "store": None,
-    "naive_rag": None,
     "cpb_rag": None,
     "history": [],
     "chunk_count": 0,
@@ -27,17 +25,17 @@ for k, v in _DEFAULTS.items():
 
 
 # ─── En-tête ──────────────────────────────────────────────────────────────────
-st.title("🔒 Test Contre-Mesure CPB")
+st.title("Test Contre-Mesure CPB")
 st.caption(
-    "Chargez n'importe quel dataset, posez une question et comparez les réponses "
-    "**sans** et **avec** la protection CPB (Contextual Privacy Budget)."
+    "Chargez n'importe quel dataset, posez une question et observez la réponse "
+    "avec la protection CPB (Contextual Privacy Budget)."
 )
 st.divider()
 
 
 # ─── Sidebar : ingestion ──────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("📂 Dataset")
+    st.header("Dataset")
     st.markdown("Formats supportés : **PDF · TXT · CSV · JSON · XLSX · XLS**")
 
     method = st.radio("Source", ["Upload fichier", "Chemin local"], horizontal=True)
@@ -47,7 +45,7 @@ with st.sidebar:
 
     if method == "Upload fichier":
         uploaded = st.file_uploader(
-            "Glissez-déposez votre fichier",
+            "Glissez-deposez votre fichier",
             type=["pdf", "txt", "csv", "json", "xlsx", "xls"],
         )
     else:
@@ -56,7 +54,7 @@ with st.sidebar:
             placeholder="C:/Users/.../mon_dataset.txt",
         )
 
-    if st.button("⚡ Charger et indexer", type="primary", use_container_width=True):
+    if st.button("Charger et indexer", type="primary", use_container_width=True):
         from store import TestChromaStore
         from ingest import load_text_from_path, load_text_from_upload, chunk_text
         from rag.naive_rag import NaiveRAG
@@ -74,36 +72,35 @@ with st.sidebar:
         else:
             with st.status("Traitement en cours...", expanded=True) as status:
                 try:
-                    st.write("📄 Lecture du fichier...")
+                    st.write("Lecture du fichier...")
                     if method == "Upload fichier":
                         text = load_text_from_upload(uploaded.read(), uploaded.name)
                     else:
                         text = load_text_from_path(local_path.strip())
-                    st.write(f"📄 {len(text):,} caractères chargés")
+                    st.write(f"{len(text):,} caracteres charges")
 
-                    st.write("✂️ Découpage en chunks...")
+                    st.write("Decoupe en chunks...")
                     chunks = chunk_text(text)
-                    st.write(f"✂️ {len(chunks)} chunks créés")
+                    st.write(f"{len(chunks)} chunks crees")
 
-                    st.write("🧮 Génération des embeddings et indexation...")
+                    st.write("Generation des embeddings et indexation...")
                     store = TestChromaStore()
                     store.reset()
                     store.index_chunks(chunks)
-                    st.write("✅ Indexé dans ChromaDB")
+                    st.write("Indexe dans ChromaDB")
 
-                    st.write("🤖 Initialisation des pipelines RAG...")
+                    st.write("Initialisation du pipeline RAG avec CPB...")
                     llm = LlamaLLM()
                     naive = NaiveRAG(store=store, llm=llm)
                     cpb = CPBNaiveRAG(naive_rag=naive)
 
                     st.session_state.store = store
-                    st.session_state.naive_rag = naive
                     st.session_state.cpb_rag = cpb
                     st.session_state.indexed = True
                     st.session_state.chunk_count = len(chunks)
                     st.session_state.history = []
 
-                    status.update(label="✅ Dataset prêt !", state="complete")
+                    status.update(label="Dataset pret !", state="complete")
 
                 except Exception as e:
                     status.update(label="Erreur lors du chargement", state="error")
@@ -111,8 +108,8 @@ with st.sidebar:
 
     if st.session_state.indexed:
         st.divider()
-        st.metric("Chunks indexés", st.session_state.chunk_count)
-        if st.button("🗑️ Réinitialiser", use_container_width=True):
+        st.metric("Chunks indexes", st.session_state.chunk_count)
+        if st.button("Reinitialiser", use_container_width=True):
             for k, v in _DEFAULTS.items():
                 st.session_state[k] = v
             st.rerun()
@@ -120,68 +117,49 @@ with st.sidebar:
 
 # ─── Zone principale : chat ───────────────────────────────────────────────────
 if not st.session_state.indexed:
-    st.info("👈 Chargez un dataset dans la barre latérale pour commencer.")
+    st.info("Chargez un dataset dans la barre laterale pour commencer.")
     st.stop()
 
-st.subheader("💬 Posez une question")
+st.subheader("Posez une question")
 
 with st.form("qform", clear_on_submit=True):
     question = st.text_area(
         "Votre question",
-        placeholder="Que contient ce document ? Qui est mentionné ?",
+        placeholder="Que contient ce document ? Qui est mentionne ?",
         height=90,
     )
-    top_k = st.slider("Nombre de chunks récupérés (top-k)", min_value=1, max_value=10, value=5)
-    submitted = st.form_submit_button("🔍 Envoyer", use_container_width=True)
+    top_k = st.slider("Nombre de chunks recuperes (top-k)", min_value=1, max_value=10, value=5)
+    submitted = st.form_submit_button("Envoyer", use_container_width=True)
 
 if submitted and question.strip():
-    col_l, col_r = st.columns(2)
+    st.markdown("### Reponse avec protection CPB")
+    with st.spinner("Generation avec protection CPB..."):
+        r_cpb = st.session_state.cpb_rag.run(question, top_k=top_k)
 
-    # ── Sans CPB ──────────────────────────────────────────────────────────────
-    with col_l:
-        st.markdown("### ❌ Sans CPB")
-        with st.spinner("Génération..."):
-            r_naive = st.session_state.naive_rag.run(question, top_k=top_k)
+    if r_cpb.get("cpb_sad_detected"):
+        st.warning(
+            f"SAD detecte · categories : {r_cpb.get('cpb_sad_categories')} "
+            f"· decision : {r_cpb.get('cpb_sad_decision')}"
+        )
 
-        st.markdown(r_naive["response"])
+    st.markdown(r_cpb["response"])
 
-        with st.expander(f"Chunks récupérés ({len(r_naive['chunks'])})"):
-            for i, c in enumerate(r_naive["chunks"]):
-                st.markdown(f"**Chunk {i+1}** — similarité : `{c['similarity_score']:.3f}`")
-                st.text(c["text"][:300] + ("..." if len(c["text"]) > 300 else ""))
+    # Metriques CPB
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Risque requete", f"{r_cpb.get('cpb_query_risk', 0):.2f}")
+    decisions = r_cpb.get("cpb_chunk_decisions", [])
+    suppressed = sum(1 for d in decisions if hasattr(d, "decision") and d.decision == "suppress")
+    masked_n = sum(1 for d in decisions if hasattr(d, "decision") and d.decision == "mask")
+    m2.metric("Chunks supprimes", suppressed)
+    m3.metric("Chunks masques", masked_n)
 
-    # ── Avec CPB ──────────────────────────────────────────────────────────────
-    with col_r:
-        st.markdown("### 🔒 Avec CPB")
-        with st.spinner("Génération avec protection CPB..."):
-            r_cpb = st.session_state.cpb_rag.run(question, top_k=top_k)
+    with st.expander(f"Chunks apres filtrage CPB ({len(r_cpb.get('chunks', []))})"):
+        for i, c in enumerate(r_cpb.get("chunks", [])):
+            st.markdown(f"**Chunk {i+1}** — similarite : `{c['similarity_score']:.3f}`")
+            st.text(c["text"][:300] + ("..." if len(c["text"]) > 300 else ""))
 
-        if r_cpb.get("cpb_sad_detected"):
-            st.warning(
-                f"SAD détecté · catégories : {r_cpb.get('cpb_sad_categories')} "
-                f"· décision : {r_cpb.get('cpb_sad_decision')}"
-            )
-
-        st.markdown(r_cpb["response"])
-
-        # Métriques CPB
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Risque requête", f"{r_cpb.get('cpb_query_risk', 0):.2f}")
-        decisions = r_cpb.get("cpb_chunk_decisions", [])
-        suppressed = sum(1 for d in decisions if hasattr(d, "decision") and d.decision == "suppress")
-        masked_n = sum(1 for d in decisions if hasattr(d, "decision") and d.decision == "mask")
-        m2.metric("Chunks supprimés", suppressed)
-        m3.metric("Chunks masqués", masked_n)
-
-        with st.expander(f"Chunks après filtrage CPB ({len(r_cpb.get('chunks', []))})"):
-            for i, c in enumerate(r_cpb.get("chunks", [])):
-                st.markdown(f"**Chunk {i+1}** — similarité : `{c['similarity_score']:.3f}`")
-                st.text(c["text"][:300] + ("..." if len(c["text"]) > 300 else ""))
-
-    # ── Sauvegarde historique ─────────────────────────────────────────────────
     st.session_state.history.append({
         "q": question,
-        "sans": r_naive["response"],
         "avec": r_cpb["response"],
         "risk": r_cpb.get("cpb_query_risk", 0),
     })
@@ -190,12 +168,10 @@ if submitted and question.strip():
 # ─── Historique ───────────────────────────────────────────────────────────────
 if st.session_state.history:
     st.divider()
-    with st.expander(f"📜 Historique — {len(st.session_state.history)} question(s)"):
+    with st.expander(f"Historique — {len(st.session_state.history)} question(s)"):
         for i, item in enumerate(reversed(st.session_state.history)):
             n = len(st.session_state.history) - i
             st.markdown(f"**Q{n} · Risque CPB : `{item['risk']:.2f}`**")
             st.markdown(f"> {item['q']}")
-            c1, c2 = st.columns(2)
-            c1.markdown("**Sans CPB :**\n\n" + item["sans"][:250] + "…")
-            c2.markdown("**Avec CPB :**\n\n" + item["avec"][:250] + "…")
+            st.markdown("**Reponse CPB :**\n\n" + item["avec"][:250] + "…")
             st.divider()

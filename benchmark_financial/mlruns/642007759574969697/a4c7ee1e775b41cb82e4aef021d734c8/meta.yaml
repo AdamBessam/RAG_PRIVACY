@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bessa/Documents/RAG_Privacy_code/benchmark_financial/mlruns/642007759574969697/a4c7ee1e775b41cb82e4aef021d734c8/artifacts
+end_time: 1779349477900
+entry_point_name: ''
+experiment_id: '642007759574969697'
+lifecycle_stage: active
+run_id: a4c7ee1e775b41cb82e4aef021d734c8
+run_name: cpb_financial_from_csv
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779349477772
+status: 3
+tags: []
+user_id: bessa

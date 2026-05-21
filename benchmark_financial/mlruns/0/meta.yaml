@@ -1,6 +1,8 @@
-artifact_location: file://home/bessama/Adam/RAG_PRIVACY/benchmark_financial/mlruns/0
-creation_time: 1779333230365
+artifact_location: file:///C:/Users/bessa/Documents/RAG_Privacy_code/benchmark_financial/mlruns/0
+creation_time: 1779349477498
 experiment_id: '0'
-last_update_time: 1779333230365
+last_update_time: 1779349477498
 lifecycle_stage: active
 name: Default
+trace_location: null
+workspace: default
