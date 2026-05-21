@@ -125,6 +125,8 @@ def run_benchmark(
 
     for q in tqdm(remaining, desc="Benchmark NaiveRAG vs CPB"):
         query_text = q["query"]
+        if not isinstance(query_text, str):
+            query_text = str(query_text)
         query_id   = q.get("global_id", q["query_id"])
         query_type = q["query_type"]
 
