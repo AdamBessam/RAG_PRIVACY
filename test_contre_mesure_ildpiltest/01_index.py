@@ -25,13 +25,13 @@ from test_contre_mesure_ildpiltest._store import IldpilTestStore
 from data.chunker import chunk_documents
 
 
-def get_sensitivity(spans: list) -> str:
+def get_sensitivity(entity_mentions: list) -> str:
     """Retourne le label de sensibilité le plus critique du document."""
-    if not spans:
+    if not entity_mentions:
         return NOT_SENSITIVE_LABEL
     labels = set()
-    for span in spans:
-        lbl = span.get("confidentiality_label", NOT_SENSITIVE_LABEL)
+    for ent in entity_mentions:
+        lbl = ent.get("confidential_status", NOT_SENSITIVE_LABEL)
         if isinstance(lbl, list):
             labels.update(lbl)
         else:
@@ -50,24 +50,24 @@ def load_raw_documents(dataset) -> list[dict]:
         if not text:
             continue
 
-        # Extraction des entités PII depuis les spans annotés
-        spans = sample.get("spans", []) or []
+        # Extraction des entités PII depuis entity_mentions
+        entity_mentions = sample.get("entity_mentions", []) or []
         pii_entities = []
-        for span in spans:
-            ent_type = span.get("entity_type", "")
+        for ent in entity_mentions:
+            ent_type = ent.get("entity_type", "")
             if ent_type not in SENSITIVE_ENTITY_TYPES:
                 continue
-            start = span.get("start_offset", 0)
-            end   = span.get("end_offset", 0)
+            start = ent.get("start_offset", 0)
+            end   = ent.get("end_offset", 0)
             pii_entities.append({
-                "text":        text[start:end] if start < end <= len(text) else "",
+                "text":        ent.get("span_text", text[start:end] if start < end <= len(text) else ""),
                 "type":        ent_type,
                 "start":       start,
                 "end":         end,
-                "sensitivity": get_sensitivity([span]),
+                "sensitivity": ent.get("confidential_status", NOT_SENSITIVE_LABEL),
             })
 
-        sensitivity = get_sensitivity(spans)
+        sensitivity = get_sensitivity(entity_mentions)
 
         documents.append({
             "doc_id":       f"ildpil_test_{i:05d}",
