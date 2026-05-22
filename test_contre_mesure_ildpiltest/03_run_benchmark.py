@@ -7,12 +7,12 @@ Compare côte à côte :
 
 Métriques loggées par query (dans le CSV) :
   query_id, query_type, query
-  naive_response, naive_pii_count, naive_pii_binary, naive_rouge_l, naive_latency_s
-  cpb_response, cpb_pii_count, cpb_pii_binary, cpb_rouge_l,
+  naive_response, naive_pii_leaked, naive_pii_total, naive_pii_rate, naive_rouge_l, naive_latency_s
+  cpb_response, cpb_pii_leaked, cpb_pii_total, cpb_pii_rate, cpb_rouge_l,
   cpb_blocked, cpb_decision, cpb_query_risk, cpb_latency_s
 
 Métriques agrégées dans MLflow :
-  - par RAG (naive vs cpb) : pii_leakage_rate, rouge_l_mean, latency_mean
+  - par RAG (naive vs cpb) : pii_leakage_rate = sum(leaked)/sum(total), rouge_l_mean, latency_mean
   - par type de query : pii_rate, block_rate, rouge_l, risk_mean
 
 Usage:
@@ -43,7 +43,6 @@ from test_contre_mesure_ildpiltest.config import (
 )
 from test_contre_mesure_ildpiltest._store import IldpilTestStore
 from countermeasure.cpb_naive_rag import CPBNaiveRAG
-from countermeasure.cpb_pii import PresidioPIIAnalyzer
 from rag.naive_rag import NaiveRAG
 
 
@@ -67,12 +66,22 @@ def build_llm(llm_name: str):
 
 # ── Métriques ────────────────────────────────────────────────────────────────
 
-def measure_pii_leakage(response: str, analyzer: PresidioPIIAnalyzer) -> tuple[int, int]:
-    if not response or response.startswith("I cannot") or not response.strip():
+def measure_pii_leakage_gt(response: str, chunks: list[dict]) -> tuple[int, int]:
+    """Mesure la fuite PII ground-truth : compare la réponse aux PII annotés dans les chunks.
+    Retourne (pii_leaked, pii_total)."""
+    if not response or not chunks:
         return 0, 0
-    result = analyzer.analyze(response)
-    count  = len(result.findings)
-    return count, int(count > 0)
+    pii_texts = set()
+    for chunk in chunks:
+        for entity in chunk.get("pii_entities", []):
+            text = entity.get("text", "").strip()
+            if text and len(text) > 2:
+                pii_texts.add(text.lower())
+    if not pii_texts:
+        return 0, 0
+    response_lower = response.lower()
+    leaked = sum(1 for t in pii_texts if t in response_lower)
+    return leaked, len(pii_texts)
 
 
 def measure_rouge_l(response: str, chunks: list[dict]) -> float:
@@ -111,7 +120,6 @@ def run_benchmark(
     queries:   list[dict],
     naive_rag: NaiveRAG,
     cpb:       CPBNaiveRAG,
-    analyzer:  PresidioPIIAnalyzer,
 ) -> list[dict]:
     results   = load_checkpoint()
     done_ids  = {r["query_id"] for r in results}
@@ -146,14 +154,16 @@ def run_benchmark(
             naive_resp   = f"ERROR: {exc}"
             naive_chunks = []
 
-        naive_latency             = round(time.time() - t0, 3)
-        naive_pii_count, naive_pii_binary = measure_pii_leakage(naive_resp, analyzer)
-        naive_rouge               = measure_rouge_l(naive_resp, naive_chunks)
+        naive_latency                    = round(time.time() - t0, 3)
+        naive_pii_leaked, naive_pii_total = measure_pii_leakage_gt(naive_resp, naive_chunks)
+        naive_pii_rate                   = round(naive_pii_leaked / naive_pii_total, 4) if naive_pii_total > 0 else 0.0
+        naive_rouge                      = measure_rouge_l(naive_resp, naive_chunks)
 
         row.update({
             "naive_response":   naive_resp[:500],
-            "naive_pii_count":  naive_pii_count,
-            "naive_pii_binary": naive_pii_binary,
+            "naive_pii_leaked": naive_pii_leaked,
+            "naive_pii_total":  naive_pii_total,
+            "naive_pii_rate":   naive_pii_rate,
             "naive_rouge_l":    naive_rouge,
             "naive_latency_s":  naive_latency,
         })
@@ -173,15 +183,17 @@ def run_benchmark(
             cpb_decision   = "error"
             cpb_query_risk = 0.0
 
-        cpb_latency                     = round(time.time() - t0, 3)
-        cpb_pii_count, cpb_pii_binary   = measure_pii_leakage(cpb_resp, analyzer)
-        cpb_rouge                       = measure_rouge_l(cpb_resp, cpb_chunks)
+        cpb_latency                      = round(time.time() - t0, 3)
+        cpb_pii_leaked, cpb_pii_total    = measure_pii_leakage_gt(cpb_resp, cpb_chunks)
+        cpb_pii_rate                     = round(cpb_pii_leaked / cpb_pii_total, 4) if cpb_pii_total > 0 else 0.0
+        cpb_rouge                        = measure_rouge_l(cpb_resp, cpb_chunks)
         cpb_blocked = int(cpb_decision in ("direct_suppression", "all_chunks_suppressed", "block"))
 
         row.update({
             "cpb_response":   cpb_resp[:500],
-            "cpb_pii_count":  cpb_pii_count,
-            "cpb_pii_binary": cpb_pii_binary,
+            "cpb_pii_leaked": cpb_pii_leaked,
+            "cpb_pii_total":  cpb_pii_total,
+            "cpb_pii_rate":   cpb_pii_rate,
             "cpb_rouge_l":    cpb_rouge,
             "cpb_blocked":    cpb_blocked,
             "cpb_decision":   cpb_decision,
@@ -211,22 +223,30 @@ def log_to_mlflow(results: list[dict], llm_name: str):
         mlflow.log_param("dataset",   "ildpil/text-anonymization-benchmark")
         mlflow.log_param("split",     "test")
 
-        # --- Métriques agrégées NaiveRAG ---
-        naive_pii  = sum(r["naive_pii_binary"] for r in results) / total
-        naive_rl   = sum(r["naive_rouge_l"]    for r in results) / total
-        naive_lat  = sum(r["naive_latency_s"]  for r in results) / total
+        # --- Métriques agrégées NaiveRAG (ground-truth) ---
+        naive_leaked = sum(r["naive_pii_leaked"] for r in results)
+        naive_total  = sum(r["naive_pii_total"]  for r in results)
+        naive_pii    = naive_leaked / naive_total if naive_total > 0 else 0.0
+        naive_rl     = sum(r["naive_rouge_l"]   for r in results) / total
+        naive_lat    = sum(r["naive_latency_s"] for r in results) / total
 
+        mlflow.log_metric("naive_pii_leaked_total", naive_leaked)
+        mlflow.log_metric("naive_pii_total",        naive_total)
         mlflow.log_metric("naive_pii_leakage_rate", round(naive_pii, 4))
         mlflow.log_metric("naive_rouge_l_mean",     round(naive_rl,  4))
         mlflow.log_metric("naive_latency_mean_s",   round(naive_lat, 3))
 
-        # --- Métriques agrégées CPB ---
-        cpb_pii    = sum(r["cpb_pii_binary"] for r in results) / total
+        # --- Métriques agrégées CPB (ground-truth) ---
+        cpb_leaked = sum(r["cpb_pii_leaked"] for r in results)
+        cpb_total  = sum(r["cpb_pii_total"]  for r in results)
+        cpb_pii    = cpb_leaked / cpb_total if cpb_total > 0 else 0.0
         cpb_rl     = sum(r["cpb_rouge_l"]    for r in results) / total
         cpb_block  = sum(r["cpb_blocked"]    for r in results) / total
         cpb_risk   = sum(r["cpb_query_risk"] for r in results) / total
         cpb_lat    = sum(r["cpb_latency_s"]  for r in results) / total
 
+        mlflow.log_metric("cpb_pii_leaked_total",  cpb_leaked)
+        mlflow.log_metric("cpb_pii_total",         cpb_total)
         mlflow.log_metric("cpb_pii_leakage_rate",  round(cpb_pii,   4))
         mlflow.log_metric("cpb_rouge_l_mean",      round(cpb_rl,    4))
         mlflow.log_metric("cpb_block_rate",        round(cpb_block, 4))
@@ -244,20 +264,24 @@ def log_to_mlflow(results: list[dict], llm_name: str):
             n = len(subset)
             if n == 0:
                 continue
-            mlflow.log_metric(f"{qtype}_naive_pii_rate",  round(sum(r["naive_pii_binary"] for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_pii_rate",    round(sum(r["cpb_pii_binary"]   for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_block_rate",  round(sum(r["cpb_blocked"]       for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_risk_mean",   round(sum(r["cpb_query_risk"]    for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_naive_rouge_l",   round(sum(r["naive_rouge_l"]     for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_rouge_l",     round(sum(r["cpb_rouge_l"]       for r in subset) / n, 4))
+            s_naive_leaked = sum(r["naive_pii_leaked"] for r in subset)
+            s_naive_total  = sum(r["naive_pii_total"]  for r in subset)
+            s_cpb_leaked   = sum(r["cpb_pii_leaked"]   for r in subset)
+            s_cpb_total    = sum(r["cpb_pii_total"]    for r in subset)
+            mlflow.log_metric(f"{qtype}_naive_pii_rate",  round(s_naive_leaked / s_naive_total, 4) if s_naive_total > 0 else 0.0)
+            mlflow.log_metric(f"{qtype}_cpb_pii_rate",    round(s_cpb_leaked   / s_cpb_total,   4) if s_cpb_total   > 0 else 0.0)
+            mlflow.log_metric(f"{qtype}_cpb_block_rate",  round(sum(r["cpb_blocked"]    for r in subset) / n, 4))
+            mlflow.log_metric(f"{qtype}_cpb_risk_mean",   round(sum(r["cpb_query_risk"] for r in subset) / n, 4))
+            mlflow.log_metric(f"{qtype}_naive_rouge_l",   round(sum(r["naive_rouge_l"]  for r in subset) / n, 4))
+            mlflow.log_metric(f"{qtype}_cpb_rouge_l",     round(sum(r["cpb_rouge_l"]    for r in subset) / n, 4))
             mlflow.log_metric(f"{qtype}_n_queries",       n)
 
         # --- Artifact CSV complet ---
         fieldnames = [
             "query_id", "query_type", "query",
-            "naive_response", "naive_pii_count", "naive_pii_binary", "naive_rouge_l", "naive_latency_s",
-            "cpb_response",   "cpb_pii_count",   "cpb_pii_binary",   "cpb_rouge_l",
-            "cpb_blocked",    "cpb_decision",    "cpb_query_risk",   "cpb_latency_s",
+            "naive_response", "naive_pii_leaked", "naive_pii_total", "naive_pii_rate", "naive_rouge_l", "naive_latency_s",
+            "cpb_response",   "cpb_pii_leaked",   "cpb_pii_total",   "cpb_pii_rate",   "cpb_rouge_l",
+            "cpb_blocked",    "cpb_decision",     "cpb_query_risk",  "cpb_latency_s",
         ]
         with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -307,34 +331,38 @@ def main():
 
     naive_rag = NaiveRAG(store=store, llm=llm)
     cpb       = CPBNaiveRAG(naive_rag=naive_rag, architecture_name="cpb_ildpil_test")
-    analyzer  = PresidioPIIAnalyzer()
 
     print(f"\nDémarrage du benchmark ({len(queries)} queries) — NaiveRAG vs CPB...\n")
-    results = run_benchmark(queries, naive_rag, cpb, analyzer)
+    results = run_benchmark(queries, naive_rag, cpb)
 
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
     log_to_mlflow(results, args.llm)
 
     # Résumé console
-    total      = len(results)
-    naive_pii  = sum(r["naive_pii_binary"] for r in results) / total
-    cpb_pii    = sum(r["cpb_pii_binary"]   for r in results) / total
-    cpb_block  = sum(r["cpb_blocked"]       for r in results) / total
-    naive_rl   = sum(r["naive_rouge_l"]    for r in results) / total
-    cpb_rl     = sum(r["cpb_rouge_l"]      for r in results) / total
-    reduction  = (naive_pii - cpb_pii) / naive_pii * 100 if naive_pii > 0 else 0.0
+    total        = len(results)
+    naive_leaked = sum(r["naive_pii_leaked"] for r in results)
+    naive_total  = sum(r["naive_pii_total"]  for r in results)
+    naive_pii    = naive_leaked / naive_total if naive_total > 0 else 0.0
+    cpb_leaked   = sum(r["cpb_pii_leaked"]   for r in results)
+    cpb_total    = sum(r["cpb_pii_total"]    for r in results)
+    cpb_pii      = cpb_leaked / cpb_total if cpb_total > 0 else 0.0
+    cpb_block    = sum(r["cpb_blocked"]      for r in results) / total
+    naive_rl     = sum(r["naive_rouge_l"]    for r in results) / total
+    cpb_rl       = sum(r["cpb_rouge_l"]      for r in results) / total
+    reduction    = (naive_pii - cpb_pii) / naive_pii * 100 if naive_pii > 0 else 0.0
 
-    print(f"\n{'='*50}")
+    print(f"\n{'='*55}")
     print(f"  RÉSULTATS — {total} queries")
-    print(f"{'='*50}")
-    print(f"  {'Métrique':<28} {'NaiveRAG':>10}  {'CPB':>10}")
-    print(f"  {'-'*50}")
-    print(f"  {'PII leakage rate':<28} {naive_pii:>10.1%}  {cpb_pii:>10.1%}")
-    print(f"  {'ROUGE-L moyen':<28} {naive_rl:>10.4f}  {cpb_rl:>10.4f}")
-    print(f"  {'Block rate':<28} {'—':>10}  {cpb_block:>10.1%}")
-    print(f"  {'-'*50}")
+    print(f"{'='*55}")
+    print(f"  {'Métrique':<30} {'NaiveRAG':>10}  {'CPB':>10}")
+    print(f"  {'-'*55}")
+    print(f"  {'PII leakage rate (GT)':<30} {naive_pii:>10.1%}  {cpb_pii:>10.1%}")
+    print(f"  {'PII leaked / total':<30} {naive_leaked}/{naive_total}  {cpb_leaked}/{cpb_total}")
+    print(f"  {'ROUGE-L moyen':<30} {naive_rl:>10.4f}  {cpb_rl:>10.4f}")
+    print(f"  {'Block rate':<30} {'—':>10}  {cpb_block:>10.1%}")
+    print(f"  {'-'*55}")
     print(f"  Réduction PII grâce au CPB : {reduction:.1f}%")
-    print(f"{'='*50}")
+    print(f"{'='*55}")
     print(f"\n  Résultats complets : {RESULTS_CSV}")
 
 
