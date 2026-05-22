@@ -160,7 +160,7 @@ def run_benchmark(
         naive_rouge                      = measure_rouge_l(naive_resp, naive_chunks)
 
         row.update({
-            "naive_response":   naive_resp[:500],
+            "naive_response":   naive_resp,
             "naive_pii_leaked": naive_pii_leaked,
             "naive_pii_total":  naive_pii_total,
             "naive_pii_rate":   naive_pii_rate,
@@ -190,7 +190,7 @@ def run_benchmark(
         cpb_blocked = int(cpb_decision in ("direct_suppression", "all_chunks_suppressed", "block"))
 
         row.update({
-            "cpb_response":   cpb_resp[:500],
+            "cpb_response":   cpb_resp,
             "cpb_pii_leaked": cpb_pii_leaked,
             "cpb_pii_total":  cpb_pii_total,
             "cpb_pii_rate":   cpb_pii_rate,
