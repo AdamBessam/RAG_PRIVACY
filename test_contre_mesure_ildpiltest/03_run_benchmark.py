@@ -24,6 +24,7 @@ Usage:
 """
 import csv
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -364,6 +365,17 @@ def main():
     print(f"  Réduction PII grâce au CPB : {reduction:.1f}%")
     print(f"{'='*55}")
     print(f"\n  Résultats complets : {RESULTS_CSV}")
+
+    # --- Auto-push du CSV sur GitHub ---
+    print("\nPush automatique des résultats sur GitHub...")
+    try:
+        subprocess.run(["git", "add", str(RESULTS_CSV)], check=True)
+        subprocess.run(["git", "commit", "-m", f"auto: benchmark results ildpil test ({args.llm}, {total} queries)"], check=True)
+        subprocess.run(["git", "push"], check=True)
+        print("Résultats pushés sur GitHub avec succès.")
+    except subprocess.CalledProcessError as e:
+        print(f"Push automatique échoué : {e}")
+        print(f"Pushez manuellement : git add {RESULTS_CSV} && git commit -m 'results' && git push")
 
 
 if __name__ == "__main__":

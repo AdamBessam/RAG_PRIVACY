@@ -86,6 +86,7 @@ experiments_results/
 benchmark_financial/checkpoint.json
 !test_contre_mesure_ildpiltest/queries.json
 !test_contre_mesure_ildpiltest/queries.csv
+!test_contre_mesure_ildpiltest/benchmark_results.csv
 
 # OS
 .DS_Store
