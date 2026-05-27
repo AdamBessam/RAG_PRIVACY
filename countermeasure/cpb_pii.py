@@ -66,6 +66,88 @@ class MedicalConditionRecognizer:
         return findings
 
 
+# ── Zero-shot structured ID detection (optional — requires gliner) ────────────
+
+class GLiNERRecognizer:
+    """
+    Optional CPB enhancement: zero-shot NER using GLiNER to detect structured
+    identifiers that Presidio cannot detect (case numbers, national IDs,
+    file numbers, bank accounts, tax IDs…).
+
+    Uses natural-language labels — no regex, no domain-specific rules.
+    Works across any dataset or domain without adaptation.
+
+    Graceful degradation: if GLiNER is not installed, this recognizer
+    silently disables itself and CPB continues without it.
+
+    Install:
+        pip install gliner
+    Model (downloaded automatically on first use, ~400 MB):
+        urchade/gliner_medium-v2.1
+    """
+
+    _MODEL_ID = "urchade/gliner_medium-v2.1"
+
+    # Labels in natural language — GLiNER resolves them contextually
+    _LABELS = [
+        "case number",
+        "file number",
+        "national ID number",
+        "medical record ID",
+        "bank account number",
+        "tax identification number",
+    ]
+
+    # Canonical CPB entity type for each label (used in ENTITY_WEIGHTS)
+    _LABEL_TO_ENTITY_TYPE: dict[str, str] = {
+        "case number":               "CASE_NUMBER",
+        "file number":               "FILE_NUMBER",
+        "national ID number":        "NATIONAL_ID",
+        "medical record ID":         "MEDICAL_RECORD_ID",
+        "bank account number":       "BANK_ACCOUNT",
+        "tax identification number": "TAX_ID",
+    }
+
+    def __init__(self):
+        self.model = None
+        self._load_model()
+
+    def _load_model(self):
+        try:
+            from gliner import GLiNER  # noqa: F401
+            self.model = GLiNER.from_pretrained(self._MODEL_ID)
+        except ImportError:
+            pass  # GLiNER not installed — silent fallback
+        except Exception:
+            pass  # model download failed — silent fallback
+
+    def is_available(self) -> bool:
+        return self.model is not None
+
+    def analyze(self, text: str) -> list[PIIFinding]:
+        """Return PIIFinding list for structured identifiers in text."""
+        if not self.model or not text:
+            return []
+
+        # GLiNER has a token limit (~512 tokens); truncate conservatively
+        text_input = text[:2000]
+        entities = self.model.predict_entities(text_input, self._LABELS, threshold=0.4)
+
+        findings = []
+        for ent in entities:
+            if len(ent["text"].strip()) <= 2:
+                continue
+            entity_type = self._LABEL_TO_ENTITY_TYPE.get(ent["label"], "OPAQUE_ID")
+            findings.append(PIIFinding(
+                entity_type=entity_type,
+                text=ent["text"],
+                start=ent["start"],
+                end=ent["end"],
+                score=float(ent["score"]),
+            ))
+        return findings
+
+
 # PII sensitivity weights.
 #
 # These weights instantiate the CPB architecture shown in the diagram:
@@ -94,6 +176,14 @@ ENTITY_WEIGHTS = {
     "DATE_TIME": 0.3,
     "URL": 0.3,
     "MEDICAL_LICENSE": 1.0,
+    # GLiNER zero-shot structured identifiers
+    "CASE_NUMBER":      1.0,
+    "FILE_NUMBER":      1.0,
+    "NATIONAL_ID":      1.0,
+    "MEDICAL_RECORD_ID": 1.0,
+    "BANK_ACCOUNT":     1.0,
+    "TAX_ID":           1.0,
+    "OPAQUE_ID":        0.9,   # fallback for unknown structured IDs
 }
 
 # Budget thresholds from the CPB architecture:
@@ -145,6 +235,13 @@ class PresidioPIIAnalyzer:
         else:
             print("[CPB] Medical NER not available (install scispaCy to enable DISEASE/CHEMICAL anonymization)")
 
+        # Optional GLiNER zero-shot NER — structured identifier detection
+        self.gliner_recognizer = GLiNERRecognizer()
+        if self.gliner_recognizer.is_available():
+            print("[CPB] GLiNER zero-shot NER enabled — structured identifier detection active (case/file/national IDs…)")
+        else:
+            print("[CPB] GLiNER not available (pip install gliner to enable structured identifier detection)")
+
     def analyze(self, text: str) -> PIISensitivityResult:
         text = text or ""
         results = self.analyzer.analyze(text=text, language=self.language)
@@ -169,6 +266,12 @@ class PresidioPIIAnalyzer:
             for mf in self.medical_recognizer.analyze(text):
                 if not self._is_already_covered(mf.start, mf.end, findings):
                     findings.append(mf)
+
+        # GLiNER — zero-shot structured identifier detection (case numbers, IDs…)
+        if self.gliner_recognizer.is_available() and text:
+            for gf in self.gliner_recognizer.analyze(text):
+                if not self._is_already_covered(gf.start, gf.end, findings):
+                    findings.append(gf)
 
         return PIISensitivityResult(
             score=self._sensitivity_score(findings),

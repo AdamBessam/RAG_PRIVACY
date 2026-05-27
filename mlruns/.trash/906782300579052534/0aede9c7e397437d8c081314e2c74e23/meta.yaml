@@ -1,0 +1,15 @@
+artifact_uri: file:///C:/Users/bessa/Documents/RAG_Privacy_code/mlruns/906782300579052534/0aede9c7e397437d8c081314e2c74e23/artifacts
+deleted_time: 1779883168531
+end_time: 1778343495615
+entry_point_name: ''
+experiment_id: '906782300579052534'
+lifecycle_stage: deleted
+run_id: 0aede9c7e397437d8c081314e2c74e23
+run_name: __summary__
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778343495119
+status: 3
+tags: []
+user_id: bessa
