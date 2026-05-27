@@ -8,6 +8,63 @@ import spacy
 from config import SPACY_MODEL
 from countermeasure.cpb_models import BudgetDecision, PIIFinding, PIISensitivityResult
 
+# ── Medical NER (optional — requires scispaCy + en_ner_bc5cdr_md) ─────────────
+_SCISPACY_MODEL = "en_ner_bc5cdr_md"
+_MEDICAL_ENTITY_TYPES = {"DISEASE", "CHEMICAL"}
+
+
+class MedicalConditionRecognizer:
+    """
+    Optional CPB enhancement: detects DISEASE and CHEMICAL entities in text
+    using scispaCy's en_ner_bc5cdr_md model (trained on BC5CDR biomedical corpus).
+
+    Provides a general, dataset-agnostic detection of medical conditions and
+    drug/chemical mentions — no annotation metadata required.
+
+    Graceful degradation: if scispaCy or the model is not installed, this
+    recognizer silently disables itself and CPB continues without medical NER.
+
+    Install:
+        pip install scispacy
+        pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_ner_bc5cdr_md-0.5.4.tar.gz
+    """
+
+    def __init__(self):
+        self.nlp = None
+        self._load_model()
+
+    def _load_model(self):
+        try:
+            import scispacy  # noqa: F401 — ensures scispaCy hooks are registered
+            self.nlp = spacy.load(_SCISPACY_MODEL)
+        except ImportError:
+            pass  # scispaCy not installed — silent fallback
+        except OSError:
+            pass  # model not downloaded — silent fallback
+
+    def is_available(self) -> bool:
+        return self.nlp is not None
+
+    def analyze(self, text: str) -> list[PIIFinding]:
+        """Return PIIFinding list for DISEASE and CHEMICAL entities in text."""
+        if not self.nlp or not text:
+            return []
+        doc = self.nlp(text)
+        findings = []
+        for ent in doc.ents:
+            if ent.label_ not in _MEDICAL_ENTITY_TYPES:
+                continue
+            if len(ent.text.strip()) <= 2:
+                continue
+            findings.append(PIIFinding(
+                entity_type=ent.label_,
+                text=ent.text,
+                start=ent.start_char,
+                end=ent.end_char,
+                score=0.80,
+            ))
+        return findings
+
 
 # PII sensitivity weights.
 #
@@ -81,6 +138,13 @@ class PresidioPIIAnalyzer:
                 subprocess.run(["python", "-m", "spacy", "download", SPACY_MODEL], check=False)
                 self.nlp = spacy.load(SPACY_MODEL)
 
+        # Optional medical NER (scispaCy) — general DISEASE/CHEMICAL detection
+        self.medical_recognizer = MedicalConditionRecognizer()
+        if self.medical_recognizer.is_available():
+            print("[CPB] Medical NER (scispaCy en_ner_bc5cdr_md) enabled — DISEASE/CHEMICAL anonymization active")
+        else:
+            print("[CPB] Medical NER not available (install scispaCy to enable DISEASE/CHEMICAL anonymization)")
+
     def analyze(self, text: str) -> PIISensitivityResult:
         text = text or ""
         results = self.analyzer.analyze(text=text, language=self.language)
@@ -99,6 +163,12 @@ class PresidioPIIAnalyzer:
 
         if self.use_spacy_fallback and self.nlp is not None and text:
             findings = self._augment_with_spacy(text, findings)
+
+        # Medical NER — adds DISEASE/CHEMICAL findings not covered by Presidio
+        if self.medical_recognizer.is_available() and text:
+            for mf in self.medical_recognizer.analyze(text):
+                if not self._is_already_covered(mf.start, mf.end, findings):
+                    findings.append(mf)
 
         return PIISensitivityResult(
             score=self._sensitivity_score(findings),

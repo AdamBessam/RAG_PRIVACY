@@ -1,0 +1,14 @@
+artifact_uri: file://home/bessama/Adam/RAG_PRIVACY/test_contre_mesure_ildpiltest/mlruns/360757694026258157/d4a2b95f98bd47219a6ece7e8c2dba5d/artifacts
+end_time: 1779784942507
+entry_point_name: ''
+experiment_id: '360757694026258157'
+lifecycle_stage: active
+run_id: d4a2b95f98bd47219a6ece7e8c2dba5d
+run_name: naiveRAG_vs_CPB_llama
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779784939624
+status: 3
+tags: []
+user_id: bessa

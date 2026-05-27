@@ -8,6 +8,7 @@ Usage:
     python test_contre_mesure_ildpiltest/04_log_from_csv.py --llm llama
 """
 import csv
+import shutil
 import sys
 from pathlib import Path
 
@@ -101,10 +102,31 @@ def log_to_mlflow(results: list[dict], llm_name: str):
             mlflow.log_metric(f"{qtype}_cpb_rouge_l",     round(sum(r["cpb_rouge_l"]    for r in subset) / n, 4))
             mlflow.log_metric(f"{qtype}_n_queries",       n)
 
+        # --- Table complète (queries + réponses + métriques par ligne) ---
+        # On écrit directement dans mlruns pour éviter les problèmes de chemin Linux/Windows
         try:
-            mlflow.log_artifact(str(RESULTS_CSV), artifact_path="results")
+            import json as _json
+            run        = mlflow.active_run()
+            run_id     = run.info.run_id
+            exp_id     = run.info.experiment_id
+            art_dir    = Path(MLFLOW_DIR) / exp_id / run_id / "artifacts" / "results"
+            art_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copie du CSV brut
+            shutil.copy(str(RESULTS_CSV), str(art_dir / RESULTS_CSV.name))
+
+            # Table JSON (colonnes + lignes) lisible dans MLflow UI
+            cols = list(results[0].keys())
+            table = {
+                "columns": cols,
+                "data":    [[r.get(c, "") for c in cols] for r in results],
+            }
+            with open(art_dir / "queries_responses.json", "w", encoding="utf-8") as fj:
+                _json.dump(table, fj, ensure_ascii=False, indent=2)
+
+            print(f"  OK - CSV + table JSON copies dans : {art_dir}")
         except Exception as e:
-            print(f"  (artifact non loggé : {e})")
+            print(f"  (artifact non copié : {e})")
 
         print(f"\n{'='*55}")
         print(f"  RÉSULTATS — {total} queries")

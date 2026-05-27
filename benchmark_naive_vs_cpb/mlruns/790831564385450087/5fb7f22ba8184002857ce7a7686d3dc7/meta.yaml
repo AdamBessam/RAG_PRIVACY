@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/bessa/Documents/RAG_Privacy_code/benchmark_naive_vs_cpb/mlruns/790831564385450087/5fb7f22ba8184002857ce7a7686d3dc7/artifacts
+end_time: 1779801895525
+entry_point_name: ''
+experiment_id: '790831564385450087'
+lifecycle_stage: active
+run_id: 5fb7f22ba8184002857ce7a7686d3dc7
+run_name: NaiveRAG_vs_OPF_llama
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1779801895180
+status: 3
+tags: []
+user_id: bessa
