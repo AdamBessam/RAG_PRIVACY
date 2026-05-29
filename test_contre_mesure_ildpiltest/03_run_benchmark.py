@@ -212,8 +212,7 @@ def run_benchmark(
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
 def log_to_mlflow(results: list[dict], llm_name: str):
-    mlflow_uri = f"file:///{MLFLOW_DIR.replace(chr(92), '/')}"
-    mlflow.set_tracking_uri(mlflow_uri)
+    mlflow.set_tracking_uri(Path(MLFLOW_DIR).resolve().as_uri())
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
     run_name = f"naiveRAG_vs_CPB_{llm_name}"

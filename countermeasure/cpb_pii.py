@@ -176,6 +176,8 @@ ENTITY_WEIGHTS = {
     "DATE_TIME": 0.3,
     "URL": 0.3,
     "MEDICAL_LICENSE": 1.0,
+    # spaCy NORP — nationalités, groupes religieux/politiques
+    "NATIONALITY":      0.5,
     # GLiNER zero-shot structured identifiers
     "CASE_NUMBER":      1.0,
     "FILE_NUMBER":      1.0,
@@ -201,6 +203,7 @@ SPACY_TO_PRESIDIO_ENTITY = {
     "FAC": "LOCATION",
     "DATE": "DATE_TIME",
     "TIME": "DATE_TIME",
+    "NORP": "NATIONALITY",   # nationalités, groupes religieux/politiques (ex: Swedish, Nigerian, British)
 }
 
 
