@@ -1,9 +1,9 @@
 """
-Étape 3b — Relance uniquement CPB améliorée sur les 1000 queries (NaiveRAG déjà fait).
+Étape 3b — Benchmark CPB améliorée sur les 1000 queries.
 
-Charge les résultats NaiveRAG depuis benchmark_results.csv et ne relance
-que la CPB améliorée (GLiNER + scispaCy + NORP).
-Écrit dans un NOUVEAU fichier : cpb_v2_results.csv (benchmark_results.csv inchangé).
+Lit les queries complètes depuis queries.json (texte non tronqué).
+CPB améliorée : Presidio + spaCy + scispaCy (DISEASE/CHEMICAL) + GLiNER (IDs structurés) + NORP.
+Écrit dans cpb_v2_results.csv (CSV CPB uniquement, pas de colonnes NaiveRAG).
 Se logue dans la même expérience MLflow "cpb_ildpil_test", run nommé CPBv2_<llm>.
 
 Usage :
@@ -32,7 +32,7 @@ from tqdm import tqdm
 
 from test_contre_mesure_ildpiltest.config import (
     CHROMA_DIR, COLLECTION_NAME,
-    RESULTS_CSV,
+    QUERIES_FILE,
     MLFLOW_DIR, MLFLOW_EXPERIMENT,
     TOP_K,
 )
@@ -111,24 +111,25 @@ def save_checkpoint(done: dict[str, dict]):
 
 # ── Runner CPB only ───────────────────────────────────────────────────────────
 
-def run_cpb_only(naive_rows: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
+def run_cpb_only(queries: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
     """
-    Pour chaque query déjà traitée par NaiveRAG, relance uniquement CPB.
-    Retourne les lignes fusionnées (naive_* inchangé + cpb_* mis à jour).
+    Lance CPB sur chaque query (texte complet depuis queries.json).
+    Retourne uniquement les colonnes CPB — pas de naive_*.
     """
     done = load_checkpoint()
-    remaining = [r for r in naive_rows if r["query_id"] not in done]
+    remaining = [q for q in queries if q["query_id"] not in done]
 
     if not remaining:
         print("Toutes les queries CPB sont déjà traitées (checkpoint complet).")
     else:
-        print(f"{len(remaining)} queries CPB restantes sur {len(naive_rows)} total\n")
+        print(f"{len(remaining)} queries CPB restantes sur {len(queries)} total\n")
 
-        for row in tqdm(remaining, desc="CPB améliorée"):
-            query_text = row["query"]
+        for q in tqdm(remaining, desc="CPB améliorée"):
+            query_text = q["query"]
             if not isinstance(query_text, str):
                 query_text = str(query_text)
-            query_id = row["query_id"]
+            query_id   = q["query_id"]
+            query_type = q["query_type"]
 
             t0 = time.time()
             try:
@@ -151,6 +152,9 @@ def run_cpb_only(naive_rows: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
             cpb_blocked = int(cpb_decision in ("direct_suppression", "all_chunks_suppressed", "block"))
 
             done[query_id] = {
+                "query_id":       query_id,
+                "query_type":     query_type,
+                "query":          query_text,
                 "cpb_response":   cpb_resp,
                 "cpb_pii_leaked": cpb_pii_leaked,
                 "cpb_pii_total":  cpb_pii_total,
@@ -163,19 +167,9 @@ def run_cpb_only(naive_rows: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
             }
             save_checkpoint(done)
 
-    # Fusion : naive_* (inchangé) + cpb_* (mis à jour)
-    merged = []
-    for row in naive_rows:
-        qid = row["query_id"]
-        cpb_cols = done.get(qid, {
-            "cpb_response": "MISSING", "cpb_pii_leaked": 0, "cpb_pii_total": 0,
-            "cpb_pii_rate": 0.0, "cpb_rouge_l": 0.0, "cpb_blocked": 0,
-            "cpb_decision": "missing", "cpb_query_risk": 0.0, "cpb_latency_s": 0.0,
-        })
-        merged.append({**row, **cpb_cols})
-
+    results = list(done.values())
     CHECKPOINT_FILE.unlink(missing_ok=True)
-    return merged
+    return results
 
 
 # ── MLflow ────────────────────────────────────────────────────────────────────
@@ -187,31 +181,19 @@ def log_to_mlflow(results: list[dict], llm_name: str):
     run_name = f"CPBv2_{llm_name}"
     with mlflow.start_run(run_name=run_name):
         total = len(results)
-        mlflow.log_param("llm",            llm_name)
-        mlflow.log_param("n_queries",      total)
-        mlflow.log_param("dataset",        "ildpil/text-anonymization-benchmark")
-        mlflow.log_param("split",          "test")
-        mlflow.log_param("cpb_version",    "v2_gliner_scispacy_norp")
+        mlflow.log_param("llm",          llm_name)
+        mlflow.log_param("n_queries",    total)
+        mlflow.log_param("dataset",      "ildpil/text-anonymization-benchmark")
+        mlflow.log_param("split",        "test")
+        mlflow.log_param("cpb_version",  "v2_gliner_scispacy_norp")
 
-        naive_leaked = sum(int(r.get("naive_pii_leaked", 0)) for r in results)
-        naive_total  = sum(int(r.get("naive_pii_total",  0)) for r in results)
-        naive_pii    = naive_leaked / naive_total if naive_total > 0 else 0.0
-        naive_rl     = sum(float(r.get("naive_rouge_l",   0)) for r in results) / total
-        naive_lat    = sum(float(r.get("naive_latency_s", 0)) for r in results) / total
-
-        mlflow.log_metric("naive_pii_leaked_total", naive_leaked)
-        mlflow.log_metric("naive_pii_total",        naive_total)
-        mlflow.log_metric("naive_pii_leakage_rate", round(naive_pii, 4))
-        mlflow.log_metric("naive_rouge_l_mean",     round(naive_rl,  4))
-        mlflow.log_metric("naive_latency_mean_s",   round(naive_lat, 3))
-
-        cpb_leaked = sum(int(r.get("cpb_pii_leaked", 0)) for r in results)
-        cpb_total  = sum(int(r.get("cpb_pii_total",  0)) for r in results)
+        cpb_leaked = sum(r["cpb_pii_leaked"] for r in results)
+        cpb_total  = sum(r["cpb_pii_total"]  for r in results)
         cpb_pii    = cpb_leaked / cpb_total if cpb_total > 0 else 0.0
-        cpb_rl     = sum(float(r.get("cpb_rouge_l",    0)) for r in results) / total
-        cpb_block  = sum(int(r.get("cpb_blocked",      0)) for r in results) / total
-        cpb_risk   = sum(float(r.get("cpb_query_risk", 0)) for r in results) / total
-        cpb_lat    = sum(float(r.get("cpb_latency_s",  0)) for r in results) / total
+        cpb_rl     = sum(r["cpb_rouge_l"]    for r in results) / total
+        cpb_block  = sum(r["cpb_blocked"]    for r in results) / total
+        cpb_risk   = sum(r["cpb_query_risk"] for r in results) / total
+        cpb_lat    = sum(r["cpb_latency_s"]  for r in results) / total
 
         mlflow.log_metric("cpb_pii_leaked_total",  cpb_leaked)
         mlflow.log_metric("cpb_pii_total",         cpb_total)
@@ -221,32 +203,24 @@ def log_to_mlflow(results: list[dict], llm_name: str):
         mlflow.log_metric("cpb_query_risk_mean",   round(cpb_risk,  4))
         mlflow.log_metric("cpb_latency_mean_s",    round(cpb_lat,   3))
 
-        pii_reduction = (naive_pii - cpb_pii) / naive_pii if naive_pii > 0 else 0.0
-        mlflow.log_metric("pii_reduction_rate", round(pii_reduction, 4))
-
         query_types = sorted(set(r["query_type"] for r in results))
         for qtype in query_types:
             subset = [r for r in results if r["query_type"] == qtype]
             n = len(subset)
             if n == 0:
                 continue
-            s_naive_leaked = sum(int(r.get("naive_pii_leaked", 0)) for r in subset)
-            s_naive_total  = sum(int(r.get("naive_pii_total",  0)) for r in subset)
-            s_cpb_leaked   = sum(int(r.get("cpb_pii_leaked",   0)) for r in subset)
-            s_cpb_total    = sum(int(r.get("cpb_pii_total",    0)) for r in subset)
-            mlflow.log_metric(f"{qtype}_naive_pii_rate", round(s_naive_leaked / s_naive_total, 4) if s_naive_total > 0 else 0.0)
-            mlflow.log_metric(f"{qtype}_cpb_pii_rate",   round(s_cpb_leaked   / s_cpb_total,   4) if s_cpb_total   > 0 else 0.0)
-            mlflow.log_metric(f"{qtype}_cpb_block_rate", round(sum(int(r.get("cpb_blocked", 0)) for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_risk_mean",  round(sum(float(r.get("cpb_query_risk", 0)) for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_naive_rouge_l",  round(sum(float(r.get("naive_rouge_l", 0)) for r in subset) / n, 4))
-            mlflow.log_metric(f"{qtype}_cpb_rouge_l",    round(sum(float(r.get("cpb_rouge_l",   0)) for r in subset) / n, 4))
+            s_leaked = sum(r["cpb_pii_leaked"] for r in subset)
+            s_total  = sum(r["cpb_pii_total"]  for r in subset)
+            mlflow.log_metric(f"{qtype}_cpb_pii_rate",   round(s_leaked / s_total, 4) if s_total > 0 else 0.0)
+            mlflow.log_metric(f"{qtype}_cpb_block_rate", round(sum(r["cpb_blocked"]    for r in subset) / n, 4))
+            mlflow.log_metric(f"{qtype}_cpb_risk_mean",  round(sum(r["cpb_query_risk"] for r in subset) / n, 4))
+            mlflow.log_metric(f"{qtype}_cpb_rouge_l",    round(sum(r["cpb_rouge_l"]    for r in subset) / n, 4))
             mlflow.log_metric(f"{qtype}_n_queries",      n)
 
         fieldnames = [
             "query_id", "query_type", "query",
-            "naive_response", "naive_pii_leaked", "naive_pii_total", "naive_pii_rate", "naive_rouge_l", "naive_latency_s",
-            "cpb_response",   "cpb_pii_leaked",   "cpb_pii_total",   "cpb_pii_rate",   "cpb_rouge_l",
-            "cpb_blocked",    "cpb_decision",     "cpb_query_risk",  "cpb_latency_s",
+            "cpb_response", "cpb_pii_leaked", "cpb_pii_total", "cpb_pii_rate",
+            "cpb_rouge_l",  "cpb_blocked",    "cpb_decision",  "cpb_query_risk", "cpb_latency_s",
         ]
         with open(CPB_V2_RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -254,7 +228,7 @@ def log_to_mlflow(results: list[dict], llm_name: str):
             writer.writerows(results)
 
         mlflow.log_artifact(str(CPB_V2_RESULTS_CSV), artifact_path="results")
-        print(f"\nNouveau CSV : {CPB_V2_RESULTS_CSV}")
+        print(f"\nCSV : {CPB_V2_RESULTS_CSV}")
 
     print(f"MLflow experiment : {MLFLOW_EXPERIMENT}")
     print(f"MLflow tracking   : {MLFLOW_DIR}")
@@ -270,21 +244,23 @@ def main():
                         help="Limite le nombre de queries (test rapide)")
     args = parser.parse_args()
 
-    if not RESULTS_CSV.exists():
-        print(f"ERREUR : {RESULTS_CSV} introuvable.")
-        print("Lancez d'abord : python test_contre_mesure_ildpiltest/03_run_benchmark.py")
+    if not QUERIES_FILE.exists():
+        print(f"ERREUR : {QUERIES_FILE} introuvable.")
+        print("Lancez d'abord : python test_contre_mesure_ildpiltest/02_generate_queries.py")
         sys.exit(1)
 
-    # Charge les résultats NaiveRAG existants
-    with open(RESULTS_CSV, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        naive_rows = list(reader)
+    with open(QUERIES_FILE, encoding="utf-8") as f:
+        queries = json.load(f)
+
+    # Normalise query_id en str pour cohérence avec le checkpoint
+    for q in queries:
+        q["query_id"] = str(q.get("global_id", q["query_id"]))
 
     if args.limit:
-        naive_rows = naive_rows[:args.limit]
+        queries = queries[:args.limit]
         print(f"Mode test : {args.limit} queries seulement")
 
-    print(f"{len(naive_rows)} queries NaiveRAG chargées depuis {RESULTS_CSV}")
+    print(f"{len(queries)} queries chargées depuis {QUERIES_FILE}")
 
     print(f"\nInitialisation ChromaDB ({CHROMA_DIR})...")
     store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
@@ -294,42 +270,37 @@ def main():
         sys.exit(1)
 
     print(f"Initialisation LLM : {args.llm}...")
-    llm      = build_llm(args.llm)
+    llm       = build_llm(args.llm)
     naive_rag = NaiveRAG(store=store, llm=llm)
     cpb       = CPBNaiveRAG(naive_rag=naive_rag, architecture_name="cpb_ildpil_test_v2")
 
-    print(f"\nDémarrage CPB améliorée ({len(naive_rows)} queries) — LLM : {args.llm}...\n")
-    results = run_cpb_only(naive_rows, cpb)
+    print(f"\nDémarrage CPB améliorée ({len(queries)} queries) — LLM : {args.llm}...\n")
+    results = run_cpb_only(queries, cpb)
 
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
     log_to_mlflow(results, args.llm)
 
     # Résumé console
-    total        = len(results)
-    naive_leaked = sum(int(r.get("naive_pii_leaked", 0)) for r in results)
-    naive_total  = sum(int(r.get("naive_pii_total",  0)) for r in results)
-    naive_pii    = naive_leaked / naive_total if naive_total > 0 else 0.0
-    cpb_leaked   = sum(int(r.get("cpb_pii_leaked",   0)) for r in results)
-    cpb_total    = sum(int(r.get("cpb_pii_total",    0)) for r in results)
-    cpb_pii      = cpb_leaked / cpb_total if cpb_total > 0 else 0.0
-    cpb_block    = sum(int(r.get("cpb_blocked",      0)) for r in results) / total
-    naive_rl     = sum(float(r.get("naive_rouge_l",  0)) for r in results) / total
-    cpb_rl       = sum(float(r.get("cpb_rouge_l",    0)) for r in results) / total
-    reduction    = (naive_pii - cpb_pii) / naive_pii * 100 if naive_pii > 0 else 0.0
+    total      = len(results)
+    cpb_leaked = sum(r["cpb_pii_leaked"] for r in results)
+    cpb_total  = sum(r["cpb_pii_total"]  for r in results)
+    cpb_pii    = cpb_leaked / cpb_total if cpb_total > 0 else 0.0
+    cpb_block  = sum(r["cpb_blocked"]    for r in results) / total
+    cpb_rl     = sum(r["cpb_rouge_l"]    for r in results) / total
+    cpb_lat    = sum(r["cpb_latency_s"]  for r in results) / total
 
     print(f"\n{'='*55}")
     print(f"  RÉSULTATS CPBv2 — {total} queries")
     print(f"{'='*55}")
-    print(f"  {'Métrique':<30} {'NaiveRAG':>10}  {'CPBv2':>10}")
-    print(f"  {'-'*55}")
-    print(f"  {'PII leakage rate (GT)':<30} {naive_pii:>10.1%}  {cpb_pii:>10.1%}")
-    print(f"  {'PII leaked / total':<30} {naive_leaked}/{naive_total}  {cpb_leaked}/{cpb_total}")
-    print(f"  {'ROUGE-L moyen':<30} {naive_rl:>10.4f}  {cpb_rl:>10.4f}")
-    print(f"  {'Block rate':<30} {'—':>10}  {cpb_block:>10.1%}")
-    print(f"  {'-'*55}")
-    print(f"  Réduction PII grâce au CPBv2 : {reduction:.1f}%")
+    print(f"  {'Métrique':<35} {'CPBv2':>10}")
+    print(f"  {'-'*50}")
+    print(f"  {'PII leakage rate':<35} {cpb_pii:>10.1%}")
+    print(f"  {'PII leaked / total':<35} {cpb_leaked}/{cpb_total}")
+    print(f"  {'ROUGE-L moyen':<35} {cpb_rl:>10.4f}")
+    print(f"  {'Block rate':<35} {cpb_block:>10.1%}")
+    print(f"  {'Latence moyenne (s)':<35} {cpb_lat:>10.3f}")
     print(f"{'='*55}")
-    print(f"\n  Résultats complets : {RESULTS_CSV}")
+    print(f"\n  Résultats complets : {CPB_V2_RESULTS_CSV}")
 
     print("\nPush automatique des résultats sur GitHub...")
     try:
