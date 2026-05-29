@@ -89,6 +89,9 @@ benchmark_financial/checkpoint.json
 !test_contre_mesure_ildpiltest/benchmark_results.csv
 !test_contre_mesure_ildpiltest/leaked_cpb_residual.csv
 !test_contre_mesure_ildpiltest/leaked_naive.csv
+!test_contre_mesure_ildpiltest/synthetic_docs.json
+!test_contre_mesure_ildpiltest/cpb_v2_results.csv
+!test_contre_mesure_ildpiltest/sage_benchmark_results.csv
 
 # OS
 .DS_Store
