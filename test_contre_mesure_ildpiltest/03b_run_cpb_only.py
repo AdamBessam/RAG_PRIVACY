@@ -203,7 +203,7 @@ def log_to_mlflow(results: list[dict], llm_name: str):
         mlflow.log_metric("cpb_query_risk_mean",   round(cpb_risk,  4))
         mlflow.log_metric("cpb_latency_mean_s",    round(cpb_lat,   3))
 
-        query_types = sorted(set(r["query_type"] for r in results))
+        query_types = sorted(set(r.get("query_type", "unknown") for r in results))
         for qtype in query_types:
             subset = [r for r in results if r["query_type"] == qtype]
             n = len(subset)
@@ -276,6 +276,18 @@ def main():
 
     print(f"\nDémarrage CPB améliorée ({len(queries)} queries) — LLM : {args.llm}...\n")
     results = run_cpb_only(queries, cpb)
+
+    # Sauvegarde CSV immédiate — indépendante de MLflow
+    fieldnames = [
+        "query_id", "query_type", "query",
+        "cpb_response", "cpb_pii_leaked", "cpb_pii_total", "cpb_pii_rate",
+        "cpb_rouge_l",  "cpb_blocked",    "cpb_decision",  "cpb_query_risk", "cpb_latency_s",
+    ]
+    with open(CPB_V2_RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"CSV sauvegardé : {CPB_V2_RESULTS_CSV}")
 
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
     log_to_mlflow(results, args.llm)
