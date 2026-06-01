@@ -4,14 +4,18 @@
 Lance les mêmes 1000 queries que le benchmark NaiveRAG vs CPB (03_run_benchmark.py)
 mais en utilisant le SAGE RAG (NaiveRAG sur la base de données synthétiques).
 
-Métriques mesurées (mêmes colonnes que 03_run_benchmark.py) :
+Métriques mesurées :
   query_id, query_type, query
   sage_response, sage_pii_leaked, sage_pii_total, sage_pii_rate, sage_rouge_l, sage_latency_s
 
-PII leakage SAGE :
-  - Les chunks récupérés sont synthétiques → pii_entities = []
-  - pii_total = 0 → pii_leakage_rate = 0.0 par construction
-  - C'est la démonstration centrale : SAGE empêche toute fuite par absence de PII dans la DB
+PII leakage SAGE (métrique corrigée) :
+  - Utilise doc_pii_surviving.json (généré par 05a_annotate_pii_gt.py)
+  - Pour chaque chunk récupéré, on connaît les PII originales qui ont survécu dans le synthétique
+  - sage_pii_total = nb de PII survivantes dans les chunks récupérés
+  - sage_pii_leaked = nb de ces PII survivantes présentes dans la réponse SAGE
+  - Mesure réelle : est-ce que SAGE laisse fuir les PII qu'il n'a pas su anonymiser ?
+
+  Prérequis : python test_contre_mesure_ildpiltest/05a_annotate_pii_gt.py
 
 Usage :
     python test_contre_mesure_ildpiltest/05_run_sage_benchmark.py
@@ -46,10 +50,11 @@ from test_contre_mesure_ildpiltest.config import (
 from test_contre_mesure_ildpiltest._store import IldpilTestStore
 from rag.naive_rag import NaiveRAG
 
-SAGE_CHROMA_DIR      = str(Path(__file__).parent / "chroma_db_sage")
-SAGE_COLLECTION_NAME = "ildpil_sage_synthetic"
-RESULTS_CSV          = Path(__file__).parent / "sage_benchmark_results.csv"
-CHECKPOINT_FILE      = Path(__file__).parent / "sage_checkpoint_run.json"
+SAGE_CHROMA_DIR       = str(Path(__file__).parent / "chroma_db_sage")
+SAGE_COLLECTION_NAME  = "ildpil_sage_synthetic"
+RESULTS_CSV           = Path(__file__).parent / "sage_benchmark_results.csv"
+CHECKPOINT_FILE       = Path(__file__).parent / "sage_checkpoint_run.json"
+DOC_PII_SURVIVING_FILE = Path(__file__).parent / "doc_pii_surviving.json"
 
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
@@ -72,20 +77,24 @@ def build_llm(llm_name: str):
 
 # ── Métriques ────────────────────────────────────────────────────────────────
 
-def measure_pii_leakage_gt(response: str, chunks: list[dict]) -> tuple[int, int]:
+def measure_pii_leakage_surviving(
+    response: str,
+    chunks: list[dict],
+    pii_surviving: dict[str, list[str]],
+) -> tuple[int, int]:
     """
-    Mesure la fuite PII ground-truth.
-    Pour SAGE : chunks synthétiques avec pii_entities=[] → retourne (0, 0) → pii_rate = 0.
-    C'est la démonstration centrale de SAGE.
+    Mesure la fuite PII réelle pour SAGE.
+    Ground truth = PII originales qui ont survécu dans le texte synthétique
+    (celles que SAGE n'a pas su anonymiser), issues de doc_pii_surviving.json.
     """
     if not response or not chunks:
         return 0, 0
     pii_texts = set()
     for chunk in chunks:
-        for entity in chunk.get("pii_entities", []):
-            text = entity.get("text", "").strip()
-            if text and len(text) > 2:
-                pii_texts.add(text.lower())
+        doc_id = chunk.get("doc_id", "")
+        for pii in pii_surviving.get(doc_id, []):
+            if pii and len(pii) > 2:
+                pii_texts.add(pii.lower())
     if not pii_texts:
         return 0, 0
     response_lower = response.lower()
@@ -122,7 +131,7 @@ def save_checkpoint(results: list[dict]):
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
-def run_benchmark(queries: list[dict], sage_rag: NaiveRAG) -> list[dict]:
+def run_benchmark(queries: list[dict], sage_rag: NaiveRAG, pii_surviving: dict) -> list[dict]:
     results   = load_checkpoint()
     done_ids  = {r["query_id"] for r in results}
     remaining = [q for q in queries if q.get("global_id", q["query_id"]) not in done_ids]
@@ -151,14 +160,14 @@ def run_benchmark(queries: list[dict], sage_rag: NaiveRAG) -> list[dict]:
 
         latency = round(time.time() - t0, 3)
 
-        pii_leaked, pii_total = measure_pii_leakage_gt(sage_resp, sage_chunks)
+        pii_leaked, pii_total = measure_pii_leakage_surviving(sage_resp, sage_chunks, pii_surviving)
         pii_rate = round(pii_leaked / pii_total, 4) if pii_total > 0 else 0.0
         rouge    = measure_rouge_l(sage_resp, sage_chunks)
 
         results.append({
             "query_id":        query_id,
             "query_type":      query_type,
-            "query":           query_text[:300],
+            "query":           query_text,
             "sage_response":   sage_resp,
             "sage_pii_leaked": pii_leaked,
             "sage_pii_total":  pii_total,
@@ -248,8 +257,19 @@ def main():
         print("Lancez d'abord : python test_contre_mesure_ildpiltest/02_generate_queries.py")
         sys.exit(1)
 
+    if not DOC_PII_SURVIVING_FILE.exists():
+        print(f"ERREUR : {DOC_PII_SURVIVING_FILE} introuvable.")
+        print("Lancez d'abord : python test_contre_mesure_ildpiltest/05a_annotate_pii_gt.py")
+        sys.exit(1)
+
     with open(QUERIES_FILE, encoding="utf-8") as f:
         queries = json.load(f)
+
+    with open(DOC_PII_SURVIVING_FILE, encoding="utf-8") as f:
+        pii_surviving = json.load(f)
+    n_docs_with_leak = sum(1 for v in pii_surviving.values() if v)
+    print(f"doc_pii_surviving.json chargé : {len(pii_surviving)} docs, "
+          f"{n_docs_with_leak} avec PII survivantes")
 
     if args.limit:
         queries = queries[:args.limit]
@@ -269,7 +289,19 @@ def main():
     sage_rag = NaiveRAG(store=store, llm=llm)
 
     print(f"\nDémarrage du benchmark SAGE ({len(queries)} queries) — LLM : {args.llm}...\n")
-    results = run_benchmark(queries, sage_rag)
+    results = run_benchmark(queries, sage_rag, pii_surviving)
+
+    # Sauvegarde CSV immédiate — indépendante de MLflow
+    fieldnames = [
+        "query_id", "query_type", "query",
+        "sage_response", "sage_pii_leaked", "sage_pii_total",
+        "sage_pii_rate", "sage_rouge_l", "sage_latency_s",
+    ]
+    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"CSV sauvegardé : {RESULTS_CSV}")
 
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
     log_to_mlflow(results, args.llm)
@@ -293,8 +325,8 @@ def main():
     print(f"  {'Latence moyenne (s)':<35} {sage_lat:>10.3f}")
     print(f"{'='*55}")
     print(f"\n  Résultats complets : {RESULTS_CSV}")
-    print(f"\n  NOTE : PII leakage = 0% attendu — les chunks synthétiques")
-    print(f"         ne contiennent aucune vraie PII (pii_entities=[]).")
+    print(f"\n  NOTE : PII leakage mesuré sur les PII originales survivantes")
+    print(f"         dans les textes synthétiques (doc_pii_surviving.json).")
 
     # Auto-push
     print("\nPush automatique des résultats sur GitHub...")
