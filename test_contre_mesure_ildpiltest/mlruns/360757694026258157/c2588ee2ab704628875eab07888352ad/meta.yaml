@@ -1,0 +1,15 @@
+artifact_uri: file://home/bessama/Adam/RAG_PRIVACY/test_contre_mesure_ildpiltest/mlruns/360757694026258157/c2588ee2ab704628875eab07888352ad/artifacts
+end_time: 1780103731728
+entry_point_name: ''
+experiment_id: '360757694026258157'
+lifecycle_stage: active
+run_id: c2588ee2ab704628875eab07888352ad
+run_name: SAGE_RAG_llama
+run_uuid: c2588ee2ab704628875eab07888352ad
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1780103731683
+status: 4
+tags: []
+user_id: bessama

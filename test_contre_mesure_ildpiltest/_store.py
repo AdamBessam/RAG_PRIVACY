@@ -5,6 +5,9 @@ Pointe sur test_contre_mesure_ildpiltest/chroma_db/ — indépendant du chroma_d
 __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import json
 import sys
