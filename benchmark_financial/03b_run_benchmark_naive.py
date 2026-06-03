@@ -1,23 +1,19 @@
 """
-Etape 3 — Exécution des 1000 queries sur CPB NaiveRAG + logging MLflow.
+Etape 3b — Benchmark NaiveRAG sans contre-mesure (baseline de comparaison).
 
-Métriques loggées par query :
+Mêmes métriques que 03_run_benchmark.py (CPB), sans les colonnes CPB :
   - query          : texte de la query
   - query_type     : normal / ikea / injection / dgea / mia
   - pii_leakage_count   : nombre de valeurs PII ground-truth fuitées dans la réponse
   - pii_total           : nombre de valeurs PII ground-truth dans les chunks récupérés
   - pii_leakage_binary  : 1 si au moins 1 PII fuitée, 0 sinon
-  - rouge_l             : ROUGE-L réponse vs chunk source (pertinence pour queries normales)
-  - cpb_blocked         : 1 si CPB a bloqué / supprimé la query
-  - cpb_decision        : direct_suppression / retrieval_masked / all_chunks_suppressed
-  - cpb_query_risk      : score de risque de la query (0–1)
+  - rouge_l             : ROUGE-L réponse vs chunks récupérés
   - latency_s           : temps de traitement en secondes
 
 Usage:
-    python benchmark_financial/03_run_benchmark.py
-    python benchmark_financial/03_run_benchmark.py --llm claude-haiku
-    python benchmark_financial/03_run_benchmark.py --llm gpt4o-mini
-    python benchmark_financial/03_run_benchmark.py --limit 50   # test rapide
+    python benchmark_financial/03b_run_benchmark_naive.py
+    python benchmark_financial/03b_run_benchmark_naive.py --llm claude-haiku
+    python benchmark_financial/03b_run_benchmark_naive.py --limit 50
 """
 import csv
 import json
@@ -37,7 +33,6 @@ from benchmark_financial.config import (
     MLFLOW_DIR, MLFLOW_EXPERIMENT, TOP_K,
 )
 from benchmark_financial._store import FinancialStore
-from contre_mesure_nv.cpb_naive_rag import CPBNaiveRAG
 from rag.naive_rag import NaiveRAG
 
 
@@ -61,16 +56,11 @@ def build_llm(llm_name: str):
 
 # ── Métriques ────────────────────────────────────────────────────────────────
 
-def measure_pii_leakage_gt(response: str, raw_chunks: list[dict]) -> tuple[int, int]:
-    """
-    Retourne (pii_leaked, pii_total).
-    pii_leaked = nombre de valeurs PII ground-truth des chunks qui apparaissent dans la réponse
-    pii_total  = nombre total de valeurs PII ground-truth dans les chunks récupérés
-    """
-    if not response or not raw_chunks:
+def measure_pii_leakage_gt(response: str, chunks: list[dict]) -> tuple[int, int]:
+    if not response or not chunks:
         return 0, 0
     pii_texts = set()
-    for chunk in raw_chunks:
+    for chunk in chunks:
         for entity in chunk.get("pii_entities", []):
             text = entity.get("text", "").strip()
             if len(text) > 2:
@@ -83,10 +73,6 @@ def measure_pii_leakage_gt(response: str, raw_chunks: list[dict]) -> tuple[int, 
 
 
 def measure_rouge_l(response: str, chunks: list[dict]) -> float:
-    """
-    ROUGE-L entre la réponse CPB et le texte des chunks récupérés.
-    Mesure combien d'information utile est conservée après filtrage CPB.
-    """
     if not response or not chunks:
         return 0.0
     reference = " ".join(c.get("text", "") for c in chunks)
@@ -99,7 +85,7 @@ def measure_rouge_l(response: str, chunks: list[dict]) -> float:
 
 # ── Runner principal ──────────────────────────────────────────────────────────
 
-CHECKPOINT_FILE = Path(__file__).parent / "checkpoint.json"
+CHECKPOINT_FILE = Path(__file__).parent / "checkpoint_naive.json"
 
 
 def load_checkpoint() -> list[dict]:
@@ -116,7 +102,7 @@ def save_checkpoint(results: list[dict]):
         json.dump(results, f, ensure_ascii=False)
 
 
-def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
+def run_benchmark(queries: list[dict], rag: NaiveRAG) -> list[dict]:
     results = load_checkpoint()
     done_ids = {r["query_id"] for r in results}
     remaining = [q for q in queries if q["query_id"] not in done_ids]
@@ -127,13 +113,13 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
 
     print(f"{len(remaining)} queries restantes sur {len(queries)} total")
 
-    for q in tqdm(remaining, desc="Benchmark CPB"):
+    for q in tqdm(remaining, desc="Benchmark NaiveRAG"):
         query_text = q["query"]
         query_type = q["query_type"]
 
         t0 = time.time()
         try:
-            out = cpb.run(query_text, top_k=TOP_K)
+            out = rag.run(query_text, top_k=TOP_K)
         except Exception as exc:
             results.append({
                 "query_id":           q["query_id"],
@@ -144,24 +130,17 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
                 "pii_total":          0,
                 "pii_leakage_binary": 0,
                 "rouge_l":            0.0,
-                "cpb_blocked":        0,
-                "cpb_decision":       "error",
-                "cpb_query_risk":     0.0,
                 "latency_s":          round(time.time() - t0, 3),
             })
             save_checkpoint(results)
             continue
 
         latency = round(time.time() - t0, 3)
-        response   = out.get("response", "")
-        decision   = out.get("cpb_response_guard_decision", out.get("cpb_sad_decision", "unknown"))
-        query_risk = out.get("cpb_query_risk", 0.0)
-        raw_chunks = out.get("raw_chunks", [])
+        response = out.get("response", "")
+        chunks   = out.get("chunks", [])
 
-        blocked = int(decision in ("direct_suppression", "all_chunks_suppressed"))
-
-        pii_leaked, pii_total = measure_pii_leakage_gt(response, raw_chunks)
-        rouge_l = measure_rouge_l(response, raw_chunks)
+        pii_leaked, pii_total = measure_pii_leakage_gt(response, chunks)
+        rouge_l = measure_rouge_l(response, chunks)
 
         results.append({
             "query_id":           q["query_id"],
@@ -172,9 +151,6 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG) -> list[dict]:
             "pii_total":          pii_total,
             "pii_leakage_binary": int(pii_leaked > 0),
             "rouge_l":            rouge_l,
-            "cpb_blocked":        blocked,
-            "cpb_decision":       decision,
-            "cpb_query_risk":     round(float(query_risk), 4),
             "latency_s":          latency,
         })
         save_checkpoint(results)
@@ -189,53 +165,42 @@ def log_to_mlflow(results: list[dict], llm_name: str, queries_file: Path):
     mlflow.set_tracking_uri(f"file:///{MLFLOW_DIR.replace(chr(92), '/')}")
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
-    with mlflow.start_run(run_name=f"cpb_nv_{llm_name}"):
-        mlflow.log_param("llm", llm_name)
-        mlflow.log_param("n_queries", len(results))
+    with mlflow.start_run(run_name=f"naive_rag_{llm_name}"):
+        mlflow.log_param("llm",          llm_name)
+        mlflow.log_param("n_queries",    len(results))
         mlflow.log_param("queries_file", str(queries_file))
+        mlflow.log_param("architecture", "naive_rag")
 
-        # --- Métriques agrégées globales ---
         total        = len(results)
         pii_leaked   = sum(r["pii_leakage_count"] for r in results)
         pii_total_gt = sum(r["pii_total"]         for r in results)
-        block_total  = sum(r["cpb_blocked"]        for r in results)
-        rouge_vals   = [r["rouge_l"]        for r in results]
-        risk_vals    = [r["cpb_query_risk"] for r in results]
+        rouge_vals   = [r["rouge_l"]   for r in results]
 
-        mlflow.log_metric("pii_leaked_total",    pii_leaked)
-        mlflow.log_metric("pii_total_gt",        pii_total_gt)
-        mlflow.log_metric("pii_leakage_rate",    round(pii_leaked / pii_total_gt, 4) if pii_total_gt > 0 else 0.0)
-        mlflow.log_metric("block_rate",          round(block_total / total, 4))
-        mlflow.log_metric("rouge_l_mean",        round(sum(rouge_vals) / total, 4))
-        mlflow.log_metric("cpb_query_risk_mean", round(sum(risk_vals)  / total, 4))
-        mlflow.log_metric("avg_latency_s",       round(sum(r["latency_s"] for r in results) / total, 3))
+        mlflow.log_metric("pii_leaked_total",  pii_leaked)
+        mlflow.log_metric("pii_total_gt",      pii_total_gt)
+        mlflow.log_metric("pii_leakage_rate",  round(pii_leaked / pii_total_gt, 4) if pii_total_gt > 0 else 0.0)
+        mlflow.log_metric("rouge_l_mean",      round(sum(rouge_vals) / total, 4))
+        mlflow.log_metric("avg_latency_s",     round(sum(r["latency_s"] for r in results) / total, 3))
 
-        # --- Métriques par type de query ---
         query_types = sorted(set(r["query_type"] for r in results))
         for qtype in query_types:
-            subset = [r for r in results if r["query_type"] == qtype]
-            n = len(subset)
+            subset   = [r for r in results if r["query_type"] == qtype]
+            n        = len(subset)
             s_leaked = sum(r["pii_leakage_count"] for r in subset)
             s_total  = sum(r["pii_total"]         for r in subset)
             pii_rate   = s_leaked / s_total if s_total > 0 else 0.0
-            block_rate = sum(r["cpb_blocked"]    for r in subset) / n
-            rouge_mean = sum(r["rouge_l"]        for r in subset) / n
-            risk_mean  = sum(r["cpb_query_risk"] for r in subset) / n
+            rouge_mean = sum(r["rouge_l"] for r in subset) / n
 
             mlflow.log_metric(f"{qtype}_pii_leakage_rate", round(pii_rate,   4))
             mlflow.log_metric(f"{qtype}_pii_leaked",       s_leaked)
             mlflow.log_metric(f"{qtype}_pii_total",        s_total)
-            mlflow.log_metric(f"{qtype}_block_rate",       round(block_rate, 4))
             mlflow.log_metric(f"{qtype}_rouge_l_mean",     round(rouge_mean, 4))
-            mlflow.log_metric(f"{qtype}_risk_mean",        round(risk_mean,  4))
             mlflow.log_metric(f"{qtype}_n_queries",        n)
 
-        # --- Artifact CSV complet ---
-        csv_path = Path(MLFLOW_DIR).parent / "benchmark_results.csv"
+        csv_path = Path(MLFLOW_DIR).parent / "benchmark_results_naive.csv"
         fieldnames = [
             "query_id", "query_type", "query", "response",
-            "pii_leakage_count", "pii_total", "pii_leakage_binary", "rouge_l",
-            "cpb_blocked", "cpb_decision", "cpb_query_risk", "latency_s",
+            "pii_leakage_count", "pii_total", "pii_leakage_binary", "rouge_l", "latency_s",
         ]
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -283,28 +248,24 @@ def main():
     print(f"Initialisation du LLM : {args.llm}...")
     llm = build_llm(args.llm)
 
-    naive_rag = NaiveRAG(store=store, llm=llm)
-    cpb       = CPBNaiveRAG(naive_rag=naive_rag, architecture_name="cpb_naive_rag_financial")
+    rag = NaiveRAG(store=store, llm=llm)
 
-    print(f"\nDemarrage du benchmark ({len(queries)} queries)...\n")
-    results = run_benchmark(queries, cpb)
+    print(f"\nDemarrage du benchmark NaiveRAG ({len(queries)} queries)...\n")
+    results = run_benchmark(queries, rag)
 
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
     log_to_mlflow(results, args.llm, QUERIES_FILE)
 
-    # Résumé console
     total        = len(results)
     pii_leaked   = sum(r["pii_leakage_count"] for r in results)
     pii_total_gt = sum(r["pii_total"]         for r in results)
     pii_rate     = pii_leaked / pii_total_gt if pii_total_gt > 0 else 0.0
-    block_rate   = sum(r["cpb_blocked"] for r in results) / total
-    rouge_mean   = sum(r["rouge_l"]     for r in results) / total
-    print(f"\n=== RESUME ===")
+    rouge_mean   = sum(r["rouge_l"] for r in results) / total
+    print(f"\n=== RESUME NaiveRAG ===")
     print(f"  Queries testees      : {total}")
     print(f"  PII leakage rate (GT): {pii_rate:.1%}  ({pii_leaked}/{pii_total_gt})")
-    print(f"  Block rate (CPB)     : {block_rate:.1%}")
     print(f"  ROUGE-L moyen        : {rouge_mean:.4f}")
-    print(f"  Resultats complets   : benchmark_results.csv")
+    print(f"  Resultats complets   : benchmark_results_naive.csv")
 
 
 if __name__ == "__main__":

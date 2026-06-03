@@ -54,6 +54,8 @@ data/neo4j/
 
 # MLflow
 .mlflow/
+mlruns/
+**/mlruns/
 
 # Raw data
 data/raw/
