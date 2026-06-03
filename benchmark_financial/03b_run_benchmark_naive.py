@@ -161,7 +161,21 @@ def run_benchmark(queries: list[dict], rag: NaiveRAG) -> list[dict]:
 
 # ── MLflow logging ────────────────────────────────────────────────────────────
 
-def log_to_mlflow(results: list[dict], llm_name: str, queries_file: Path):
+def save_csv(results: list[dict]) -> Path:
+    csv_path = Path(MLFLOW_DIR).parent / "benchmark_results_naive.csv"
+    fieldnames = [
+        "query_id", "query_type", "query", "response",
+        "pii_leakage_count", "pii_total", "pii_leakage_binary", "rouge_l", "latency_s",
+    ]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"\nCSV des resultats : {csv_path}")
+    return csv_path
+
+
+def log_to_mlflow(results: list[dict], llm_name: str, queries_file: Path, csv_path: Path):
     mlflow.set_tracking_uri(f"file:///{MLFLOW_DIR.replace(chr(92), '/')}")
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
@@ -174,13 +188,14 @@ def log_to_mlflow(results: list[dict], llm_name: str, queries_file: Path):
         total        = len(results)
         pii_leaked   = sum(r["pii_leakage_count"] for r in results)
         pii_total_gt = sum(r["pii_total"]         for r in results)
-        rouge_vals   = [r["rouge_l"]   for r in results]
+        rouge_vals   = [r["rouge_l"]    for r in results]
+        lat_vals     = [r["latency_s"]  for r in results]
 
         mlflow.log_metric("pii_leaked_total",  pii_leaked)
         mlflow.log_metric("pii_total_gt",      pii_total_gt)
         mlflow.log_metric("pii_leakage_rate",  round(pii_leaked / pii_total_gt, 4) if pii_total_gt > 0 else 0.0)
         mlflow.log_metric("rouge_l_mean",      round(sum(rouge_vals) / total, 4))
-        mlflow.log_metric("avg_latency_s",     round(sum(r["latency_s"] for r in results) / total, 3))
+        mlflow.log_metric("avg_latency_s",     round(sum(lat_vals)   / total, 3))
 
         query_types = sorted(set(r["query_type"] for r in results))
         for qtype in query_types:
@@ -197,18 +212,7 @@ def log_to_mlflow(results: list[dict], llm_name: str, queries_file: Path):
             mlflow.log_metric(f"{qtype}_rouge_l_mean",     round(rouge_mean, 4))
             mlflow.log_metric(f"{qtype}_n_queries",        n)
 
-        csv_path = Path(MLFLOW_DIR).parent / "benchmark_results_naive.csv"
-        fieldnames = [
-            "query_id", "query_type", "query", "response",
-            "pii_leakage_count", "pii_total", "pii_leakage_binary", "rouge_l", "latency_s",
-        ]
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(results)
-
         mlflow.log_artifact(str(csv_path), artifact_path="results")
-        print(f"\nCSV des resultats : {csv_path}")
 
     print(f"MLflow experiment : {MLFLOW_EXPERIMENT}")
     print(f"MLflow tracking   : {MLFLOW_DIR}")
@@ -253,19 +257,36 @@ def main():
     print(f"\nDemarrage du benchmark NaiveRAG ({len(queries)} queries)...\n")
     results = run_benchmark(queries, rag)
 
+    print(f"\nSauvegarde CSV...")
+    csv_path = save_csv(results)
+
     print(f"\nLogging dans MLflow ({MLFLOW_DIR})...")
-    log_to_mlflow(results, args.llm, QUERIES_FILE)
+    log_to_mlflow(results, args.llm, QUERIES_FILE, csv_path)
 
     total        = len(results)
     pii_leaked   = sum(r["pii_leakage_count"] for r in results)
     pii_total_gt = sum(r["pii_total"]         for r in results)
     pii_rate     = pii_leaked / pii_total_gt if pii_total_gt > 0 else 0.0
-    rouge_mean   = sum(r["rouge_l"] for r in results) / total
-    print(f"\n=== RESUME NaiveRAG ===")
+    rouge_mean   = sum(r["rouge_l"]    for r in results) / total
+    lat_mean     = sum(r["latency_s"]  for r in results) / total
+
+    print(f"\n=== RESUME NaiveRAG ({args.llm}) ===")
     print(f"  Queries testees      : {total}")
     print(f"  PII leakage rate (GT): {pii_rate:.1%}  ({pii_leaked}/{pii_total_gt})")
     print(f"  ROUGE-L moyen        : {rouge_mean:.4f}")
-    print(f"  Resultats complets   : benchmark_results_naive.csv")
+    print(f"  Latence moyenne      : {lat_mean:.3f}s")
+
+    query_types = sorted(set(r["query_type"] for r in results))
+    print(f"\n  --- Par type de query ---")
+    for qtype in query_types:
+        subset   = [r for r in results if r["query_type"] == qtype]
+        n        = len(subset)
+        s_leaked = sum(r["pii_leakage_count"] for r in subset)
+        s_total  = sum(r["pii_total"]         for r in subset)
+        rate     = s_leaked / s_total if s_total > 0 else 0.0
+        print(f"  [{qtype:<12}] n={n:>3}  PII={rate:.1%} ({s_leaked}/{s_total})")
+
+    print(f"\n  Resultats complets   : {csv_path}")
 
 
 if __name__ == "__main__":
