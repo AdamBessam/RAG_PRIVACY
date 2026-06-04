@@ -9,6 +9,7 @@ Améliorations vs countermeasure/cpb_naive_rag.py :
 - Tous les autres blocs CPB sont identiques (importés depuis countermeasure/)
 """
 import json
+import re
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -19,8 +20,39 @@ from config import TOP_K
 from countermeasure.cpb_models import AuditEntry
 from countermeasure.cpb_pii import BudgetGate, PresidioPIIAnalyzer, PresidioPIIAnonymizer
 from countermeasure.cpb_response_guard import CPBResponseGuard
-from countermeasure.sad_detector import SADDetector
 from contre_mesure_nv.cpb_query_risk import QueryRiskScorer
+from contre_mesure_nv.sad_detector_nv import SADDetectorNV
+
+
+# Mapping : type d'entité PII → catégorie SAD (pour enrichir la taxonomie SBERT)
+ENTITY_TYPE_TO_SAD_CATEGORY: dict[str, str] = {
+    # Financier
+    "IBAN_CODE":         "FINANCIAL",
+    "CREDIT_CARD":       "FINANCIAL",
+    "US_BANK_NUMBER":    "FINANCIAL",
+    "BANK_ACCOUNT":      "FINANCIAL",
+    "TAX_ID":            "FINANCIAL",
+    "US_ITIN":           "FINANCIAL",
+    "CRYPTO":            "FINANCIAL",
+    # Identité
+    "US_SSN":            "IDENTITY",
+    "US_PASSPORT":       "IDENTITY",
+    "US_DRIVER_LICENSE": "IDENTITY",
+    "NATIONAL_ID":       "IDENTITY",
+    "NRP":               "IDENTITY",
+    "PERSON":            "IDENTITY",
+    # Contact
+    "EMAIL_ADDRESS":     "CONTACT",
+    "PHONE_NUMBER":      "CONTACT",
+    "LOCATION":          "CONTACT",
+    # Santé
+    "DISEASE":           "HEALTH",
+    "CHEMICAL":          "HEALTH",
+    "MEDICAL_LICENSE":   "HEALTH",
+    "MEDICAL_RECORD_ID": "HEALTH",
+    # Technique
+    "IP_ADDRESS":        "TECHNICAL",
+}
 
 
 class CPBNaiveRAG:
@@ -44,14 +76,16 @@ class CPBNaiveRAG:
         self.architecture_name = architecture_name
         self.session_id = session_id or str(uuid4())
 
-        self.pii_analyzer  = PresidioPIIAnalyzer(language=language)
+        self.pii_analyzer   = PresidioPIIAnalyzer(language=language)
         self.pii_anonymizer = PresidioPIIAnonymizer()
-        self.budget_gate   = BudgetGate()
+        self.budget_gate    = BudgetGate()
         self.response_guard = CPBResponseGuard(self.pii_analyzer, self.pii_anonymizer)
-        self.sad_detector  = SADDetector()
 
         learned_types = self._discover_pii_types()
         self.query_risk_scorer = QueryRiskScorer(learned_types=learned_types)
+
+        sad_taxonomy      = self._build_sad_taxonomy()
+        self.sad_detector = SADDetectorNV(extra_taxonomy=sad_taxonomy)
 
         self.audit_log: list[AuditEntry] = []
 
@@ -103,6 +137,54 @@ class CPBNaiveRAG:
             print("[CPB-NV] Aucun type PII découvert — core universel uniquement")
 
         return entity_types
+
+    def _build_sad_taxonomy(self) -> dict[str, list[str]]:
+        """
+        Construit des phrases de taxonomie SAD depuis les chunks du store.
+
+        Scan un échantillon de chunks, détecte les PII avec Presidio,
+        extrait les phrases qui contiennent ces PII, les anonymise, puis
+        les regroupe par catégorie SAD (FINANCIAL, IDENTITY, CONTACT...).
+
+        Fonctionne que le dataset soit annoté (GT) ou non — Presidio est
+        toujours utilisé pour localiser les spans exacts dans les phrases.
+        """
+        taxonomy: dict[str, list[str]] = {}
+        MAX_SENTENCES_PER_CATEGORY = 15
+
+        def add(entity_type: str, sentence: str) -> None:
+            category = ENTITY_TYPE_TO_SAD_CATEGORY.get(entity_type.upper(), entity_type.upper())
+            bucket = taxonomy.setdefault(category, [])
+            if sentence not in bucket and len(bucket) < MAX_SENTENCES_PER_CATEGORY:
+                bucket.append(sentence)
+
+        try:
+            results = self.store.collection.get(limit=100, include=["documents"])
+            for doc in results.get("documents", []):
+                if not doc:
+                    continue
+                sentences = [
+                    s.strip()
+                    for s in re.split(r"(?<=[.!?])\s+", doc)
+                    if len(s.strip()) > 20
+                ]
+                for sent in sentences:
+                    pii_result = self.pii_analyzer.analyze(sent)
+                    if not pii_result.findings:
+                        continue
+                    anon_sent, _ = self.pii_anonymizer.anonymize_text(sent, pii_result.findings)
+                    for finding in pii_result.findings:
+                        add(finding.entity_type, anon_sent)
+        except Exception:
+            pass
+
+        if taxonomy:
+            n = sum(len(v) for v in taxonomy.values())
+            print(f"[CPB-NV] Taxonomie SAD enrichie : {sorted(taxonomy.keys())} ({n} phrases)")
+        else:
+            print("[CPB-NV] Taxonomie SAD : base uniquement (aucune phrase extraite du store)")
+
+        return taxonomy
 
     def retrieve(self, query: str, top_k: int = TOP_K) -> dict:
         query_risk = self.query_risk_scorer.score(query, session_id=self.session_id)
