@@ -127,7 +127,8 @@ def run_benchmark(queries: list[dict], cpb: CPBNaiveRAG, sbert: SentenceTransfor
     print(f"{len(remaining)} queries restantes sur {len(queries)} total")
 
     for q in tqdm(remaining, desc="Benchmark CPB ASQ-PHI"):
-        query_text = q["query"]
+        raw_query  = q["query"]
+        query_text = raw_query if isinstance(raw_query, str) else raw_query.get("query") or str(raw_query)
         query_type = q["query_type"]
 
         t0 = time.time()
