@@ -14,6 +14,7 @@ Usage:
     --skip-generation  : reuse responses already saved in data/zhang_eval/responses.json
 """
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -37,7 +38,8 @@ ZHANG_TABLE_2 = {
 DATA_DIR = Path(__file__).parent.parent / "data" / "zhang_eval"
 CHROMA_ZHANG_DIR = Path(__file__).parent.parent / "data" / "chroma_zhang"
 RESPONSES_PATH = DATA_DIR / "responses.json"
-RESULTS_PATH = DATA_DIR / "results.json"
+RESULTS_PATH   = DATA_DIR / "results.json"
+CSV_PATH       = DATA_DIR / "results_per_query.csv"
 EXPERIMENT_NAME = "zhang_evaluation"
 
 
@@ -244,8 +246,32 @@ def main(skip_generation: bool = False):
         utility = compute_utility(attacks, responses, contexts_per_query, references)
         print(f"   CR={utility['CR']:.4f}  SS={utility['SS']:.4f}  AR={utility['AR']:.4f}")
 
-        # 5. MLflow logging
-        print("\n5. MLflow logging...")
+        # 5. CSV export — one row per query
+        print("\n5. CSV export...")
+        with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                "index", "doc_id", "query", "response",
+                "LO_precision", "LO_recall", "LO_f1",
+                "AE", "PI",
+            ])
+            writer.writeheader()
+            for i, (attack, resp) in enumerate(zip(attacks, responses)):
+                lo = lo_results[i] if i < len(lo_results) else {}
+                writer.writerow({
+                    "index":        i,
+                    "doc_id":       attack.get("doc_id", ""),
+                    "query":        attack.get("query", ""),
+                    "response":     resp,
+                    "LO_precision": round(lo.get("precision", 0.0), 4),
+                    "LO_recall":    round(lo.get("recall",    0.0), 4),
+                    "LO_f1":        round(lo.get("f1",        0.0), 4),
+                    "AE":           round(ae_results[i],  4) if i < len(ae_results)  else "",
+                    "PI":           round(pi_scores[i],   4) if i < len(pi_scores)   else "",
+                })
+        print(f"   CSV saved → {CSV_PATH}")
+
+        # 6. MLflow logging
+        print("\n6. MLflow logging...")
         mlflow.log_metric("LO_precision", lo_agg["precision"])
         mlflow.log_metric("LO_recall", lo_agg["recall"])
         mlflow.log_metric("LO_f1", lo_agg["f1"])
@@ -277,11 +303,13 @@ def main(skip_generation: bool = False):
         with open(RESULTS_PATH, "w", encoding="utf-8") as f:
             json.dump(all_results, f, ensure_ascii=False, indent=2)
         mlflow.log_artifact(str(RESULTS_PATH))
+        mlflow.log_artifact(str(CSV_PATH))
 
-        # 6. Results table
+        # 7. Results table
         print_results_table(cpb_metrics)
 
     print(f"\nDone. Full results → {RESULTS_PATH}")
+    print(f"      Per-query CSV  → {CSV_PATH}")
 
 
 if __name__ == "__main__":
