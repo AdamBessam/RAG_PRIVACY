@@ -203,7 +203,7 @@ class PIMetric:
             neighbors = collection.query(
                 query_embeddings=[emb],
                 n_results=n_results,
-                include=["ids", "metadatas", "distances"],
+                include=["metadatas", "distances"],
             )
 
             neighbor_ids: list[str] = neighbors["ids"][0]
