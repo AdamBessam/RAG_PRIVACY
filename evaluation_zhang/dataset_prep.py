@@ -5,6 +5,9 @@ Outputs:
   - ChromaDB collection 'zhang_eval_corpus' in data/chroma_zhang/
   - JSON file data/zhang_eval/doc_index.json  →  {doc_id: {text, metadata}}
 """
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import json
 import random
 import sys
