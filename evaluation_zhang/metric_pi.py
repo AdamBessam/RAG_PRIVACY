@@ -6,14 +6,19 @@ Step 1 (offline, once):
   Each statement is embedded (all-MiniLM-L6-v2) and stored in a dedicated
   ChromaDB collection ("zhang_claims") with metadata individual_id = source_doc_id.
 
+  After indexing, avgDissimilar is precomputed for every claim (offline):
+    For each claim c, query its top-k DB neighbors (excluding itself).
+    disSim(n) = 1 / (1 + sim(c,n) / max(log10(docLength_n), 1))   — formula (11)
+    avgDissimilar(c) = max(Σ disSim, 1) / max(count, 1)            — formula (12)
+  This weight reflects the uniqueness of c in the whole dataset and is stored
+  in ChromaDB metadata so it is available at evaluation time.
+
 Step 2 (per response):
   GPT-4o decomposes the RAG response into atomic attributes.
   Each attribute is embedded and used to query the claims DB → top-k candidates.
 
-Step 3 — Uniqueness weighting (exact Zhang et al. formulas):
-  disSim(i)    = 1 / (1 + score_i / max(log10(docLength), 1))
-  avgDissimilar = max(Σ disSim_i, 1) / max(count, 1)
-  score_ind     = Σ (similarity × avgDissimilar)
+Step 3 — Scoring with precomputed weights (Zhang et al.):
+  For each returned claim: score_ind += sim(attr, claim) × claim.avgDissimilar
 
 Step 4:
   Select top-k individuals by score.
@@ -22,6 +27,7 @@ Step 4:
 
 Direction: ↓  (lower = better privacy)
 """
+import hashlib
 import json
 import math
 import sys
@@ -46,6 +52,7 @@ SIMILARITY_THRESHOLD = 0.3
 TOP_K_CANDIDATES = 5
 CLAIMS_QUERY_K = 100
 CLAIMS_FLAG = DATA_DIR / "claims_built.flag"
+WEIGHTS_FLAG = DATA_DIR / "weights_computed.flag"
 
 DECOMPOSE_DOC_PROMPT = """\
 Decompose the following legal document into atomic factual statements.
@@ -96,6 +103,10 @@ class PIMetric:
             col = client.get_collection(CLAIMS_COLLECTION)
             self._collection = col
             print(f"Claims DB ready: {col.count()} claims")
+            if not WEIGHTS_FLAG.exists():
+                print("Precomputing uniqueness weights (offline, one-time)...")
+                self._precompute_weights(col)
+                WEIGHTS_FLAG.touch()
             return col
 
         # Delete and recreate for a clean build
@@ -144,6 +155,11 @@ class PIMetric:
         CLAIMS_FLAG.touch()
         print(f"Claims DB built: {collection.count()} claims")
         self._collection = collection
+
+        print("Precomputing uniqueness weights (offline)...")
+        self._precompute_weights(collection)
+        WEIGHTS_FLAG.touch()
+
         return collection
 
     def _get_collection(self) -> chromadb.Collection:
@@ -154,6 +170,72 @@ class PIMetric:
             )
             self._collection = client.get_collection(CLAIMS_COLLECTION)
         return self._collection
+
+    # ── Step 1b: Precompute uniqueness weights (offline) ─────────────────────
+
+    def _precompute_weights(self, collection: chromadb.Collection) -> None:
+        """
+        For every claim in the DB, compute avgDissimilar (Zhang et al. formula 12)
+        based on its similarity to its neighbors *within the DB* (not to response
+        attributes). Stores the result as avg_dissimilar in each claim's metadata.
+        This is a one-time offline operation run after claims are indexed.
+        """
+        n_claims = collection.count()
+        if n_claims == 0:
+            return
+
+        # Retrieve all claims at once to avoid N round-trips
+        all_data = collection.get(include=["embeddings", "metadatas"])
+        all_ids: list[str] = all_data["ids"]
+        all_embeddings: list[list[float]] = all_data["embeddings"]
+        all_metas: list[dict] = all_data["metadatas"]
+
+        updated_ids: list[str] = []
+        updated_metas: list[dict] = []
+
+        for claim_id, emb, meta in tqdm(
+            zip(all_ids, all_embeddings, all_metas),
+            total=len(all_ids),
+            desc="Computing uniqueness weights",
+        ):
+            # Fetch k+1 to exclude self (self has distance ≈ 0)
+            n_results = min(CLAIMS_QUERY_K + 1, n_claims)
+            neighbors = collection.query(
+                query_embeddings=[emb],
+                n_results=n_results,
+                include=["ids", "metadatas", "distances"],
+            )
+
+            neighbor_ids: list[str] = neighbors["ids"][0]
+            neighbor_distances: list[float] = neighbors["distances"][0]
+            neighbor_metas: list[dict] = neighbors["metadatas"][0]
+
+            filtered = [
+                (max(0.0, 1.0 - dist), nmeta)
+                for nid, dist, nmeta in zip(
+                    neighbor_ids, neighbor_distances, neighbor_metas
+                )
+                if nid != claim_id and max(0.0, 1.0 - dist) >= SIMILARITY_THRESHOLD
+            ]
+
+            count = len(filtered)
+            dis_sims = []
+            for sim, nmeta in filtered:
+                doc_length = int(nmeta.get("doc_length", 100))
+                denom = max(math.log10(max(doc_length, 2)), 1.0)
+                dis_sims.append(1.0 / (1.0 + sim / denom))
+
+            avg_dissimilar = max(sum(dis_sims), 1.0) / max(count, 1)
+            updated_ids.append(claim_id)
+            updated_metas.append({**meta, "avg_dissimilar": avg_dissimilar})
+
+        # Batch-update metadata
+        batch_size = 100
+        for start in tqdm(range(0, len(updated_ids), batch_size), desc="Storing weights"):
+            collection.update(
+                ids=updated_ids[start : start + batch_size],
+                metadatas=updated_metas[start : start + batch_size],
+            )
 
     # ── GPT-4o decomposition helpers ─────────────────────────────────────────
 
@@ -189,8 +271,9 @@ class PIMetric:
 
     def _score_individuals(self, response_attrs: list[str]) -> dict[str, float]:
         """
-        For each response attribute, query claims DB and aggregate
-        per-individual scores with uniqueness weighting.
+        For each response attribute, query claims DB and accumulate per-individual
+        scores using precomputed avgDissimilar weights (Zhang et al. Step 3):
+          score_ind += sim(attr, claim) × claim.avg_dissimilar
         """
         collection = self._get_collection()
         n_claims = collection.count()
@@ -212,35 +295,16 @@ class PIMetric:
                 include=["metadatas", "distances"],
             )
 
-            distances = results["distances"][0]
-            metadatas = results["metadatas"][0]
-
-            # ChromaDB cosine distance → similarity
-            filtered = [
-                (max(0.0, 1.0 - dist), meta)
-                for dist, meta in zip(distances, metadatas)
-                if max(0.0, 1.0 - dist) >= SIMILARITY_THRESHOLD
-            ]
-
-            if not filtered:
-                continue
-
-            count = len(filtered)
-
-            # disSim formula (Zhang et al.)
-            dis_sims = []
-            for sim, meta in filtered:
-                doc_length = int(meta.get("doc_length", 100))
-                denom = max(math.log10(max(doc_length, 2)), 1.0)
-                dis_sim = 1.0 / (1.0 + sim / denom)
-                dis_sims.append(dis_sim)
-
-            avg_dissimilar = max(sum(dis_sims), 1.0) / max(count, 1)
-
-            for sim, meta in filtered:
+            for dist, meta in zip(results["distances"][0], results["metadatas"][0]):
+                sim = max(0.0, 1.0 - dist)
+                if sim < SIMILARITY_THRESHOLD:
+                    continue
                 ind_id = meta.get("individual_id", "")
-                score = sim * avg_dissimilar
-                individual_scores[ind_id] = individual_scores.get(ind_id, 0.0) + score
+                # Use the precomputed uniqueness weight (offline, from Step 1)
+                avg_dissimilar = float(meta.get("avg_dissimilar", 1.0))
+                individual_scores[ind_id] = (
+                    individual_scores.get(ind_id, 0.0) + sim * avg_dissimilar
+                )
 
         return individual_scores
 
