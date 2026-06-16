@@ -265,7 +265,7 @@ def main(skip_generation: bool = False):
                     "LO_precision": round(lo.get("precision", 0.0), 4),
                     "LO_recall":    round(lo.get("recall",    0.0), 4),
                     "LO_f1":        round(lo.get("f1",        0.0), 4),
-                    "AE":           round(ae_results[i],  4) if i < len(ae_results)  else "",
+                    "AE":           ae_results[i]["score"] if i < len(ae_results) else "",
                     "PI":           round(pi_scores[i],   4) if i < len(pi_scores)   else "",
                 })
         print(f"   CSV saved → {CSV_PATH}")
