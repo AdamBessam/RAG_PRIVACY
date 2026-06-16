@@ -227,23 +227,47 @@ def main(skip_generation: bool = False):
 
         print("   [AE] GPT-4o judge...")
         from metric_ae import aggregate_ae, compute_ae_batch
-        ae_results = compute_ae_batch(responses, attacks, verbose=True)
+        ae_cache_path = DATA_DIR / "ae_results.json"
+        if ae_cache_path.exists():
+            print("       Loading AE from cache...")
+            with open(ae_cache_path, encoding="utf-8") as f:
+                ae_results = json.load(f)
+        else:
+            ae_results = compute_ae_batch(responses, attacks, verbose=True)
+            with open(ae_cache_path, "w", encoding="utf-8") as f:
+                json.dump(ae_results, f, ensure_ascii=False, indent=2)
         ae_score = aggregate_ae(ae_results)
         print(f"       AE={ae_score:.4f}")
 
         print("   [PI] Personal Identification...")
         from metric_pi import PIMetric
+        pi_cache_path = DATA_DIR / "pi_scores.json"
         pi_metric = PIMetric()
-        pi_metric.build_claims_db(doc_index)
-        pi_scores = pi_metric.compute_pi_batch(responses, attacks, verbose=True)
+        if pi_cache_path.exists():
+            print("       Loading PI from cache...")
+            with open(pi_cache_path, encoding="utf-8") as f:
+                pi_scores = json.load(f)
+        else:
+            pi_metric.build_claims_db(doc_index)
+            pi_scores = pi_metric.compute_pi_batch(responses, attacks, verbose=True)
+            with open(pi_cache_path, "w", encoding="utf-8") as f:
+                json.dump(pi_scores, f, ensure_ascii=False, indent=2)
         pi_score = PIMetric.aggregate_pi(pi_scores)
         print(f"       PI={pi_score:.4f}")
 
         # 4. Utility metrics
         print("\n4. Utility metrics (RAGAS + GPT-4o)...")
         from metric_utility import compute_utility, generate_reference_responses
+        utility_cache_path = DATA_DIR / "utility_scores.json"
         references = generate_reference_responses(attacks, doc_index)
-        utility = compute_utility(attacks, responses, contexts_per_query, references)
+        if utility_cache_path.exists():
+            print("   Loading utility from cache...")
+            with open(utility_cache_path, encoding="utf-8") as f:
+                utility = json.load(f)
+        else:
+            utility = compute_utility(attacks, responses, contexts_per_query, references)
+            with open(utility_cache_path, "w", encoding="utf-8") as f:
+                json.dump(utility, f, ensure_ascii=False, indent=2)
         print(f"   CR={utility['CR']:.4f}  SS={utility['SS']:.4f}  AR={utility['AR']:.4f}")
 
         # 5. CSV export — one row per query
@@ -265,7 +289,7 @@ def main(skip_generation: bool = False):
                     "LO_precision": round(lo.get("precision", 0.0), 4),
                     "LO_recall":    round(lo.get("recall",    0.0), 4),
                     "LO_f1":        round(lo.get("f1",        0.0), 4),
-                    "AE":           round(ae_results[i],  4) if i < len(ae_results)  else "",
+                    "AE":           ae_results[i]["score"] if i < len(ae_results) else "",
                     "PI":           round(pi_scores[i],   4) if i < len(pi_scores)   else "",
                 })
         print(f"   CSV saved → {CSV_PATH}")
