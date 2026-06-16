@@ -129,3 +129,7 @@ Miniconda3-latest-Linux-x86_64.sh
 *.sh
 adam-env/
 mon-env/
+data/chroma_zhang/
+data/chroma_zhang_claims/
+*.pickle
+*.flag
