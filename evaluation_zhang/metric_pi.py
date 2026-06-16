@@ -42,8 +42,9 @@ GPT4O_MODEL = "gpt-4o"
 CLAIMS_COLLECTION = "zhang_claims"
 CLAIMS_CHROMA_DIR = Path(__file__).parent.parent / "data" / "chroma_zhang_claims"
 DATA_DIR = Path(__file__).parent.parent / "data" / "zhang_eval"
-SIMILARITY_THRESHOLD = 0.5
+SIMILARITY_THRESHOLD = 0.3
 TOP_K_CANDIDATES = 5
+CLAIMS_QUERY_K = 100
 CLAIMS_FLAG = DATA_DIR / "claims_built.flag"
 
 DECOMPOSE_DOC_PROMPT = """\
@@ -203,7 +204,7 @@ class PIMetric:
                 continue
 
             attr_emb = self.embedder.embed_single(attr).tolist()
-            n_results = min(TOP_K_CANDIDATES * 3, n_claims)
+            n_results = min(CLAIMS_QUERY_K, n_claims)
 
             results = collection.query(
                 query_embeddings=[attr_emb],
