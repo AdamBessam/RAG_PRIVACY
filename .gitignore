@@ -127,3 +127,5 @@ checkpoints/
 .claude/
 Miniconda3-latest-Linux-x86_64.sh
 *.sh
+adam-env/
+mon-env/
