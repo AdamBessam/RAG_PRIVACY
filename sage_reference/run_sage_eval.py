@@ -12,7 +12,9 @@ Pré-requis :
 Lancer depuis sage_reference/ pour que les chemins relatifs résolvent correctement :
   cd sage_reference && python run_sage_eval.py
 """
-
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 import json
 import math
 import re
