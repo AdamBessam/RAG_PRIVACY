@@ -325,6 +325,49 @@ class PIMetric:
 
         return individual_scores.get(source_doc_id, 0.0) if source_doc_id in top_k_ids else 0.0
 
+    def debug_pi(self, response: str, source_doc_id: str) -> None:
+        col = self._get_collection()
+        print("collection.metadata :", col.metadata)   # doit contenir hnsw:space = cosine
+        print("nb claims :", col.count())
+
+        attrs = self._decompose_response(response)
+        print(f"\n{len(attrs)} attributs extraits :")
+        for a in attrs:
+            print("  -", a[:80])
+
+        scores = {}
+        for t, attr in enumerate(attrs):
+            emb = self.embedder.embed_single(attr).tolist()
+            n = min(CLAIMS_QUERY_K, col.count())
+            res = col.query(query_embeddings=[emb], n_results=n,
+                            include=["metadatas", "distances"])
+            dists = res["distances"][0]
+            sims = [1.0 - d for d in dists]
+            n_above = sum(1 for s in sims if s >= SIMILARITY_THRESHOLD)
+            print(f"\nattr[{t}] sim min={min(sims):.3f} max={max(sims):.3f} "
+                  f"moy={sum(sims)/len(sims):.3f}  (>=0.3 : {n_above}/{len(sims)})")
+
+            true_sims = []
+            for d, m in zip(dists, res["metadatas"][0]):
+                ind = m.get("individual_id", "")
+                s, w = 1.0 - d, float(m.get("avg_dissimilar", 1.0))
+                scores[ind] = scores.get(ind, 0.0) + max(0.0, s) * w
+                if ind == source_doc_id:
+                    true_sims.append(s)
+            print(f"   claims du vrai individu retrouvés : {len(true_sims)}"
+                  + (f", sim max={max(true_sims):.3f}" if true_sims else ""))
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        rank = next((i for i, (ind, _) in enumerate(ranked) if ind == source_doc_id), None)
+        print(f"\nindividus avec score > 0 : {len(scores)}")
+        print(f"score du vrai individu  : {scores.get(source_doc_id, 0.0):.3f}")
+        print(f"rang du vrai individu   : {rank}  (top-{TOP_K_CANDIDATES} requis)")
+        print("top 5 :", [(i[:12], round(v, 2)) for i, v in ranked[:5]])
+
+        sample = col.get(limit=8, include=["metadatas"])
+        print("avg_dissimilar (échantillon) :",
+              [round(float(m.get("avg_dissimilar", -1)), 3) for m in sample["metadatas"]])
+
     def compute_pi_batch(
         self,
         responses: list[str],
@@ -332,6 +375,11 @@ class PIMetric:
         verbose: bool = True,
     ) -> list[float]:
         """Compute PI scores for all (response, attack) pairs."""
+        if responses:
+            print("=" * 60, "\nDEBUG — 1ere instance\n" + "=" * 60)
+            self.debug_pi(responses[0], attacks[0]["doc_id"])
+            print("=" * 60)
+            import sys; sys.exit(0)
         scores = []
         for i, (resp, attack) in enumerate(zip(responses, attacks)):
             if verbose:
