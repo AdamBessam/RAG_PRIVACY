@@ -6,10 +6,11 @@ But : vérifier si le problème de PI est un bug de calcul ou une différence d'
   - Si Naive RAG PI ≈ CPB v3 PI  → bug ou problème d'échelle (les deux ont le même score bas)
 
 Usage:
-    python recompute_pi_naive.py [--skip-generation]
-      --skip-generation  : réutilise naive_responses.json si déjà généré
+    python recompute_pi_naive.py [--refresh]
+      --refresh  : ignore le cache de réponses Naive RAG existant et régénère tout
 """
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -18,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "zhang_eval"
 CHROMA_ZHANG_DIR = Path(__file__).parent.parent / "data" / "chroma_zhang"
-NAIVE_RESPONSES_PATH = DATA_DIR / "naive_responses.json"
+CACHE_DIR = Path(__file__).parent / "cache"
+NAIVE_RESPONSES_CACHE_PATH = CACHE_DIR / "naive_rag_responses.json"
 NAIVE_PI_CACHE_PATH  = DATA_DIR / "naive_pi_scores.json"
 
 
@@ -70,24 +72,53 @@ class ZhangChromaStore:
         return self.collection.count()
 
 
-def run_naive_rag(attacks: list[dict]) -> list[str]:
+def _cache_keys_for(attacks: list[dict]) -> list[str]:
+    """One key per attack, in order. Uses doc_id when unique, else a hash of the query."""
+    doc_ids = [a.get("doc_id") for a in attacks]
+    if all(doc_ids) and len(set(doc_ids)) == len(doc_ids):
+        return doc_ids
+    return [hashlib.sha256(a["query"].encode("utf-8")).hexdigest() for a in attacks]
+
+
+def run_naive_rag(attacks: list[dict], refresh: bool = False) -> list[str]:
     from llms.llama_llm import LlamaLLM
     from rag.naive_rag import NaiveRAG
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    cache: dict[str, str] = {}
+    if NAIVE_RESPONSES_CACHE_PATH.exists() and not refresh:
+        with open(NAIVE_RESPONSES_CACHE_PATH, encoding="utf-8") as f:
+            cache = json.load(f)
+        print(f"Naive RAG cache loaded: {len(cache)} responses already cached.")
+
+    keys = _cache_keys_for(attacks)
+
+    def save_cache() -> None:
+        with open(NAIVE_RESPONSES_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
 
     store = ZhangChromaStore()
     llm   = LlamaLLM()
     rag   = NaiveRAG(store=store, llm=llm)
 
-    responses: list[str] = []
-    for i, attack in enumerate(attacks):
+    n_generated = 0
+    for i, (attack, key) in enumerate(zip(attacks, keys)):
         print(f"  Naive RAG [{i + 1}/{len(attacks)}] {attack['doc_id']}...", end="\r")
+        if key in cache:
+            continue
         result = rag.run(attack["query"])
-        responses.append(result["response"])
+        cache[key] = result["response"]
+        n_generated += 1
+        if n_generated % 10 == 0:
+            save_cache()
     print()
-    return responses
+
+    save_cache()
+    return [cache[key] for key in keys]
 
 
-def main(skip_generation: bool = False):
+def main(refresh: bool = False):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Charger les données
@@ -97,18 +128,10 @@ def main(skip_generation: bool = False):
         attacks = json.load(f)
     print(f"{len(doc_index)} documents, {len(attacks)} attack queries\n")
 
-    # 2. Générer (ou charger) les réponses Naive RAG
-    if skip_generation and NAIVE_RESPONSES_PATH.exists():
-        print("Loading cached Naive RAG responses...")
-        with open(NAIVE_RESPONSES_PATH, encoding="utf-8") as f:
-            naive_responses = json.load(f)
-        print(f"{len(naive_responses)} responses loaded from cache.")
-    else:
-        print("Running Naive RAG (llama3.1:8b)...")
-        naive_responses = run_naive_rag(attacks)
-        with open(NAIVE_RESPONSES_PATH, "w", encoding="utf-8") as f:
-            json.dump(naive_responses, f, ensure_ascii=False, indent=2)
-        print(f"Naive responses saved → {NAIVE_RESPONSES_PATH}")
+    # 2. Générer (ou charger depuis le cache) les réponses Naive RAG
+    print("Running Naive RAG (llama3.1:8b)...")
+    naive_responses = run_naive_rag(attacks, refresh=refresh)
+    print(f"Naive responses cached → {NAIVE_RESPONSES_CACHE_PATH}")
 
     # 3. Calculer (ou charger) PI pour Naive RAG
     from metric_pi import PIMetric
@@ -177,9 +200,9 @@ def main(skip_generation: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare PI: Naive RAG vs CPB v3")
     parser.add_argument(
-        "--skip-generation",
+        "--refresh",
         action="store_true",
-        help="Réutilise naive_responses.json existant",
+        help="Ignore le cache de réponses Naive RAG existant et régénère tout",
     )
     args = parser.parse_args()
-    main(skip_generation=args.skip_generation)
+    main(refresh=args.refresh)
