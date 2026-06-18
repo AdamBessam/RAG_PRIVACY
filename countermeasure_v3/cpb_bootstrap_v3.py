@@ -9,7 +9,8 @@ Steps:
   0a  Discover PII types from ChromaDB metadata (Path A) or Presidio on sample (Path B)
   0b  Infer corpus domain via Llama zero-shot (JSON output)
   0c  Generate domain-specific sensitive categories + Presidio hints via Llama
-  0d  Enrich each category with real anonymized phrases + synthetic Llama fallback
+  0d  Enrich each category with real anonymized phrases, topping up with Llama-generated
+      synthetic phrases (looping over several calls if needed) until 15 phrases are reached
   0e  Build L2-normalized SBERT centroids (all-MiniLM-L6-v2, local)
 """
 
@@ -222,13 +223,41 @@ class CPBBootstrapV3:
                 self._collect_real_phrases(category, all_sentences, analyzer, anonymizer, category_hints)
                 if analyzer is not None else []
             )
-            if len(real) < 3:
-                synthetic = self._generate_synthetic_phrases(category, domain)
-                real = real + synthetic
-            phrases = real[:15] if real else self._fallback_phrases(category)
-            taxonomy[category] = phrases
+            phrases = list(real)
+            if len(phrases) < 15:
+                phrases = self._fill_with_synthetic(phrases, category, domain, target=15)
+            taxonomy[category] = phrases[:15] if phrases else self._fallback_phrases(category)
 
         return taxonomy
+
+    def _fill_with_synthetic(
+        self,
+        phrases: list[str],
+        category: str,
+        domain: str,
+        target: int = 15,
+        max_attempts: int = 5,
+    ) -> list[str]:
+        """Top up `phrases` with Llama-generated synthetic phrases until `target` is reached.
+
+        Each Llama call yields at most 5 phrases, so several calls may be needed.
+        Stops early after `max_attempts` calls if Llama keeps returning nothing
+        (e.g. Ollama unavailable), to avoid looping forever.
+        """
+        seen = set(phrases)
+        attempts = 0
+        while len(phrases) < target and attempts < max_attempts:
+            attempts += 1
+            new_phrases = self._generate_synthetic_phrases(category, domain)
+            if not new_phrases:
+                break
+            for p in new_phrases:
+                if p not in seen:
+                    seen.add(p)
+                    phrases.append(p)
+                    if len(phrases) >= target:
+                        break
+        return phrases
 
     def _collect_real_phrases(
         self,

@@ -12,9 +12,12 @@ Pré-requis :
 Peut être lancé depuis n'importe quel dossier (chemins résolus relativement au script) :
   python sage_reference/run_sage_eval.py
 """
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
 import json
 import math
 import re
