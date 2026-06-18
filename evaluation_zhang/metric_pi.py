@@ -270,11 +270,6 @@ class PIMetric:
     # ── Steps 2-3: Individual scoring ────────────────────────────────────────
 
     def _score_individuals(self, response_attrs: list[str]) -> dict[str, float]:
-        """
-        For each response attribute, query claims DB and accumulate per-individual
-        scores using precomputed avgDissimilar weights (Zhang et al. Step 3):
-          score_ind += sim(attr, claim) × claim.avg_dissimilar
-        """
         collection = self._get_collection()
         n_claims = collection.count()
         if n_claims == 0:
@@ -296,14 +291,11 @@ class PIMetric:
             )
 
             for dist, meta in zip(results["distances"][0], results["metadatas"][0]):
-                sim = max(0.0, 1.0 - dist)
-                if sim < SIMILARITY_THRESHOLD:
-                    continue
+                sim = max(0.0, 1.0 - dist)                       # sim(attr, claim)
                 ind_id = meta.get("individual_id", "")
-                # Use the precomputed uniqueness weight (offline, from Step 1)
-                avg_dissimilar = float(meta.get("avg_dissimilar", 1.0))
+                weight = float(meta.get("avg_dissimilar", 1.0))  # poids des formules 11-12
                 individual_scores[ind_id] = (
-                    individual_scores.get(ind_id, 0.0) + sim * avg_dissimilar
+                    individual_scores.get(ind_id, 0.0) + sim * weight
                 )
 
         return individual_scores
