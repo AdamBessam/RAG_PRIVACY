@@ -9,8 +9,8 @@ Pré-requis :
   - questions/per-chat-question.json + truth/per-chat-truth.json   (utilité)
   - pip install rouge_score
 
-Lancer depuis sage_reference/ pour que les chemins relatifs résolvent correctement :
-  cd sage_reference && python run_sage_eval.py
+Peut être lancé depuis n'importe quel dossier (chemins résolus relativement au script) :
+  python sage_reference/run_sage_eval.py
 """
 __import__('pysqlite3')
 import sys
@@ -151,12 +151,13 @@ def run_utility(defense: str, questions, references):
 # 4) Orchestration
 # ======================================================================
 if __name__ == "__main__":
-    # Chemins relatifs résolus depuis sage_reference/ (dossier de lancement)
-    target_q   = json.load(open("questions/target-chatdoctor-question.json",   encoding="utf-8"))
-    untarget_q = json.load(open("questions/untarget-chatdoctor-question.json", encoding="utf-8"))
+    # Chemins absolus par rapport à ce script — fonctionne quel que soit le dossier de lancement
+    HERE = Path(__file__).parent
+    target_q   = json.load(open(HERE / "questions" / "target-chatdoctor-question.json",   encoding="utf-8"))
+    untarget_q = json.load(open(HERE / "questions" / "untarget-chatdoctor-question.json", encoding="utf-8"))
     # utilité (décommente quand prêt) :
-    # perf_q   = json.load(open("questions/per-chat-question.json", encoding="utf-8"))
-    # perf_ref = json.load(open("truth/per-chat-truth.json",        encoding="utf-8"))
+    # perf_q   = json.load(open(HERE / "questions" / "per-chat-question.json", encoding="utf-8"))
+    # perf_ref = json.load(open(HERE / "truth" / "per-chat-truth.json",        encoding="utf-8"))
 
     results = []
     for defense in ["cpb"]:
