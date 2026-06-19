@@ -12,6 +12,17 @@ Pré-requis :
 Peut être lancé depuis n'importe quel dossier (chemins résolus relativement au script) :
   python sage_reference/run_sage_eval.py
 """
+import os
+# Sur Windows, torch (sentence-transformers) et chromadb (hnswlib) chargent chacun
+# leur propre runtime OpenMP multi-thread ; leur cohabitation provoque une
+# access violation native (0xC0000005). La variable d'env seule ne suffit pas,
+# torch ignore OMP_NUM_THREADS au runtime — il faut l'appel explicite ci-dessous,
+# fait avant tout import de chromadb/sentence-transformers.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+import torch
+torch.set_num_threads(1)
+
 try:
     __import__('pysqlite3')
     import sys
@@ -23,6 +34,7 @@ import math
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 # Racine du projet — nécessaire pour importer countermeasure_v3, rag, llms, config
@@ -173,3 +185,9 @@ if __name__ == "__main__":
         # MLflow (décommente si un run est actif) :
         # import mlflow
         # mlflow.log_metrics({k: v for k, v in r.items() if isinstance(v, (int, float))})
+
+    out_path = HERE / "results" / f"sage_eval_{datetime.now():%Y%m%d_%H%M%S}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"Résultats sauvegardés -> {out_path}")

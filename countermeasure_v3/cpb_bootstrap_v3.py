@@ -112,7 +112,7 @@ class CPBBootstrapV3:
         try:
             from presidio_analyzer import AnalyzerEngine
             analyzer = AnalyzerEngine()
-            result = self.store.get(limit=50, include=["documents"])
+            result = self.store.collection.get(limit=50, include=["documents"])
             docs = result.get("documents") or []
             types: set[str] = set()
             for doc in docs:
@@ -248,7 +248,7 @@ class CPBBootstrapV3:
         attempts = 0
         while len(phrases) < target and attempts < max_attempts:
             attempts += 1
-            new_phrases = self._generate_synthetic_phrases(category, domain)
+            new_phrases = self._generate_synthetic_phrases(category, domain, exclude=phrases, attempt=attempts)
             if not new_phrases:
                 break
             for p in new_phrases:
@@ -288,17 +288,34 @@ class CPBBootstrapV3:
 
         return phrases
 
-    def _generate_synthetic_phrases(self, category: str, domain: str) -> list[str]:
+    def _generate_synthetic_phrases(
+        self,
+        category: str,
+        domain: str,
+        exclude: list[str] | None = None,
+        attempt: int = 0,
+    ) -> list[str]:
         label = category.lower().replace("_", " ")
+        avoid_clause = ""
+        if exclude:
+            avoid_block = "\n".join(f"- {p}" for p in exclude[:15])
+            avoid_clause = (
+                "Do not repeat or rephrase any of these already-generated sentences:\n"
+                f"{avoid_block}\n"
+            )
         prompt = (
             f"Generate 3 to 5 short realistic sentences (1-2 sentences each) that describe "
             f"a person's {label} attribute in a {domain or 'legal'} document context. "
             "Do not use real names. "
+            f"{avoid_clause}"
             "Respond in valid JSON only.\n"
             'Example: {"phrases": ["The individual has a chronic condition.", "She disclosed her faith."]}'
         )
         try:
-            raw = self._llama_call(prompt)
+            # temperature=0 rend Llama déterministe : sans varier le seed, une
+            # tentative de relance (cf. _fill_with_synthetic) renverrait exactement
+            # la même réponse que la précédente.
+            raw = self._llama_call(prompt, seed=self.seed + attempt)
             parsed = self._parse_json(raw)
             phrases = [str(p).strip() for p in parsed.get("phrases", []) if len(str(p).strip()) > 15]
             return phrases[:5]
@@ -333,12 +350,12 @@ class CPBBootstrapV3:
 
     def _sample_chunks(self, n: int) -> list[str]:
         try:
-            result = self.store.get(limit=n, include=["documents"])
+            result = self.store.collection.get(limit=n, include=["documents"])
             return [d for d in (result.get("documents") or []) if d and d.strip()]
         except Exception:
             return []
 
-    def _llama_call(self, prompt: str) -> str:
+    def _llama_call(self, prompt: str, seed: int | None = None) -> str:
         resp = requests.post(
             f"{self.ollama_host}/api/generate",
             json={
@@ -346,7 +363,7 @@ class CPBBootstrapV3:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0, "seed": self.seed},
+                "options": {"temperature": 0, "seed": seed if seed is not None else self.seed},
             },
             timeout=120,
         )
