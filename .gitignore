@@ -133,5 +133,9 @@ adam-env/
 mon-env/
 data/chroma_zhang/
 data/chroma_zhang_claims/
+data/chroma_chatdoctor/
+data/chroma_chatdoctor_claims/
 *.pickle
 *.flag
+*.db
+*.npy
