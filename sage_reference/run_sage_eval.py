@@ -29,6 +29,7 @@ try:
     sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 except ImportError:
     pass
+import hashlib
 import json
 import math
 import re
@@ -45,6 +46,30 @@ from rouge_score import rouge_scorer
 from sage_metrics import evaluate_repeat, evaluate_rouge, extract_target_diseases
 
 K = 1  # nombre de chunks récupérés (l'article utilise k=1)
+
+HERE = Path(__file__).parent
+CACHE_PATH = HERE / "cache" / "responses_cache.json"
+
+
+# ======================================================================
+# Cache des réponses par requête — permet de reprendre après un crash
+# sans tout recalculer depuis le début (clé = hash(defense + query)).
+# ======================================================================
+def _load_cache() -> dict:
+    if CACHE_PATH.exists():
+        with open(CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_cache(cache: dict) -> None:
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def _cache_key(defense: str, query: str) -> str:
+    return hashlib.sha256(f"{defense}:{query}".encode("utf-8")).hexdigest()
 
 
 # ======================================================================
@@ -101,13 +126,23 @@ def run_system(query: str, defense: str):
 # ======================================================================
 # 2) Évaluation des attaques (targeted + untargeted)
 # ======================================================================
-def run_attack(attack: str, defense: str, queries):
+def run_attack(attack: str, defense: str, queries, cache: dict):
     outputs, contexts, sources = [], [], []
-    for q in queries:
-        resp, chunks, srcs = run_system(q, defense)
+    for i, q in enumerate(queries):
+        key = _cache_key(defense, q)
+        cached = cache.get(key)
+        if cached is not None:
+            resp, chunks, srcs = cached["response"], cached["chunks"], cached["sources"]
+        else:
+            resp, chunks, srcs = run_system(q, defense)
+            cache[key] = {"response": resp, "chunks": chunks, "sources": srcs}
+            _save_cache(cache)  # persisté immédiatement : un crash ne perd que la requête en cours
+        print(f"  [{attack}/{defense}] {i + 1}/{len(queries)}"
+              f" ({'cache' if cached is not None else 'calcul'})", end="\r")
         outputs.append(resp)
         contexts.append(chunks[:K])
         sources.append((srcs[:K]) if srcs else [""] * min(K, len(chunks)))
+    print()
 
     diseases = extract_target_diseases(queries) if attack == "target" else None
     rep = evaluate_repeat(outputs, contexts, sources, target_diseases=diseases)
@@ -167,17 +202,22 @@ def run_utility(defense: str, questions, references):
 # ======================================================================
 if __name__ == "__main__":
     # Chemins absolus par rapport à ce script — fonctionne quel que soit le dossier de lancement
-    HERE = Path(__file__).parent
     target_q   = json.load(open(HERE / "questions" / "target-chatdoctor-question.json",   encoding="utf-8"))
     untarget_q = json.load(open(HERE / "questions" / "untarget-chatdoctor-question.json", encoding="utf-8"))
     # utilité (décommente quand prêt) :
     # perf_q   = json.load(open(HERE / "questions" / "per-chat-question.json", encoding="utf-8"))
     # perf_ref = json.load(open(HERE / "truth" / "per-chat-truth.json",        encoding="utf-8"))
 
+    # Reprise après crash : les réponses déjà calculées dans cache/responses_cache.json
+    # sont réutilisées, seules les requêtes manquantes sont (re)calculées.
+    cache = _load_cache()
+    if cache:
+        print(f"Cache trouvé -> {len(cache)} réponses déjà calculées, reprise en cours.")
+
     results = []
     for defense in ["cpb"]:
-        results.append(run_attack("target",   defense, target_q))
-        results.append(run_attack("untarget", defense, untarget_q))
+        results.append(run_attack("target",   defense, target_q,   cache))
+        results.append(run_attack("untarget", defense, untarget_q, cache))
         # results.append(run_utility(defense, perf_q, perf_ref))
 
     for r in results:

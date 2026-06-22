@@ -135,7 +135,6 @@ class CPBBootstrapV3:
             "identify the domain of this corpus.\n\n"
             f"Excerpts:\n{excerpt}\n\n"
             "Respond in valid JSON only. "
-            'The domain must be exactly one of: medical, financial, legal, general\n'
             'Example: {"domain": "legal", "confidence": 0.9}'
         )
         try:
@@ -155,7 +154,7 @@ class CPBBootstrapV3:
     def _step_0c(self, domain: str) -> tuple[list[str], dict[str, set[str]]]:
         prompt = (
             f"You are a privacy expert. For a corpus in the '{domain}' domain, "
-            "list 5 to 8 categories of sensitive personal attributes that must be protected.\n"
+            "list 5 to 10 categories of sensitive personal attributes that must be protected.\n"
             "For each category, also list which Presidio NLP entity types would signal its presence in text.\n"
             "Available Presidio entity types: PERSON, LOCATION, ORGANIZATION, DATE_TIME, NRP, "
             "NATIONALITY, MEDICAL_LICENSE, DISEASE, CHEMICAL, IBAN_CODE, CREDIT_CARD, "
