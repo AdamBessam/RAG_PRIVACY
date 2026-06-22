@@ -209,6 +209,52 @@ class ChatDoctorChromaStore:
 # ── CPB v3 inference ───────────────────────────────────────────────────────────
 
 CPB_RESULTS_PATH = DATA_DIR / "cpb_results.json"  # checkpointed {response, contexts} per instance
+BOOTSTRAP_REPORT_PATH = Path(__file__).parent / "bootstrap_report.json"  # domaine + catégories CPB
+
+
+def log_and_save_bootstrap(result, path: Path = BOOTSTRAP_REPORT_PATH) -> None:
+    """Affiche et sauvegarde ce que la contre-mesure CPB v3 a auto-découvert au
+    démarrage : le domaine inféré, les catégories sensibles, et pour chaque
+    catégorie avec quoi elle a été remplie (phrases de la taxonomie générées/
+    réelles + types d'entités Presidio suggérés)."""
+    categories = list(result.dynamic_categories)
+    taxonomy = result.dynamic_taxonomy or {}
+    hints = result.category_hints or {}
+
+    report = {
+        "domain": result.domain,
+        "domain_confidence": round(float(result.domain_confidence), 4),
+        "used_fallback": result.used_fallback,
+        "learned_pii_types": sorted(result.learned_types),
+        "categories": categories,
+        "category_details": {
+            cat: {
+                "presidio_hints": sorted(hints.get(cat, [])),
+                "n_phrases": len(taxonomy.get(cat, [])),
+                "phrases": list(taxonomy.get(cat, [])),
+            }
+            for cat in categories
+        },
+    }
+
+    print("\n── CPB v3 bootstrap (auto-découverte) ───────────────────────────")
+    print(f"  Domaine décidé   : {result.domain}  (confiance {report['domain_confidence']:.2f}"
+          + (", FALLBACK" if result.used_fallback else "") + ")")
+    print(f"  Types PII appris : {len(report['learned_pii_types'])}")
+    print(f"  Catégories ({len(categories)}) — avec quoi chacune a été remplie :")
+    for cat in categories:
+        d = report["category_details"][cat]
+        hints_str = ", ".join(d["presidio_hints"]) or "—"
+        examples = "; ".join(p[:60] for p in d["phrases"][:3]) or "—"
+        print(f"    • {cat}")
+        print(f"        hints Presidio : {hints_str}")
+        print(f"        {d['n_phrases']} phrases — ex.: {examples}")
+    print("─────────────────────────────────────────────────────────────────")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    print(f"  Rapport bootstrap sauvegardé → {path}\n")
 
 
 def load_or_run_cpb(attacks: list[dict], skip_generation: bool) -> tuple[list[str], list[list[str]]]:
@@ -233,6 +279,7 @@ def load_or_run_cpb(attacks: list[dict], skip_generation: bool) -> tuple[list[st
     llm = LlamaLLM()
     naive_rag = NaiveRAG(store=store, llm=llm)
     cpb = CPBNaiveRAGV3(naive_rag=naive_rag)
+    log_and_save_bootstrap(cpb.bootstrap_result)
 
     def run_one(attack: dict) -> dict:
         result = cpb.run(attack["query"])
