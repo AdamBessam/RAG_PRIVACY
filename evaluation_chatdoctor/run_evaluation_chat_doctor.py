@@ -54,6 +54,7 @@ except ImportError:
 import argparse
 import csv
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -537,10 +538,17 @@ def compute_utility_chunked(
             json.dump(chunk_rows, f, ensure_ascii=False)
         all_rows.extend(chunk_rows)
 
+    def nanmean(key: str) -> float:
+        values = [r[key] for r in all_rows if not math.isnan(r[key])]
+        n_skipped = len(all_rows) - len(values)
+        if n_skipped:
+            print(f"  {key}: {n_skipped}/{len(all_rows)} rows were NaN (RAGAS noncommittal/empty-context), excluded from mean")
+        return sum(values) / len(values)
+
     return {
-        "CR": sum(r["CR"] for r in all_rows) / len(all_rows),
-        "SS": sum(r["SS"] for r in all_rows) / len(all_rows),
-        "AR": sum(r["AR"] for r in all_rows) / len(all_rows),
+        "CR": nanmean("CR"),
+        "SS": nanmean("SS"),
+        "AR": nanmean("AR"),
     }
 
 
