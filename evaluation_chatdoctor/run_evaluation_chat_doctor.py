@@ -526,29 +526,28 @@ def compute_utility_chunked(
         result = evaluate(dataset, metrics=metrics)
         df = result.to_pandas()
 
-        chunk_rows = [
-            {
-                "CR": float(row["context_precision"]),
+        chunk_rows = []
+        for _, row in df.iterrows():
+            cr = float(row["context_precision"])
+            # RAGAS's average-precision formula divides by the number of contexts
+            # judged relevant; when none of the retrieved contexts are judged
+            # relevant to the ground truth, that's 0/0 -> NaN even though the
+            # real score is 0 (zero useful context retrieved).
+            if math.isnan(cr):
+                cr = 0.0
+            chunk_rows.append({
+                "CR": cr,
                 "SS": float(row["answer_similarity"]),
                 "AR": float(row["answer_relevancy"]),
-            }
-            for _, row in df.iterrows()
-        ]
+            })
         with open(chunk_path, "w", encoding="utf-8") as f:
             json.dump(chunk_rows, f, ensure_ascii=False)
         all_rows.extend(chunk_rows)
 
-    def nanmean(key: str) -> float:
-        values = [r[key] for r in all_rows if not math.isnan(r[key])]
-        n_skipped = len(all_rows) - len(values)
-        if n_skipped:
-            print(f"  {key}: {n_skipped}/{len(all_rows)} rows were NaN (RAGAS noncommittal/empty-context), excluded from mean")
-        return sum(values) / len(values)
-
     return {
-        "CR": nanmean("CR"),
-        "SS": nanmean("SS"),
-        "AR": nanmean("AR"),
+        "CR": sum(r["CR"] for r in all_rows) / len(all_rows),
+        "SS": sum(r["SS"] for r in all_rows) / len(all_rows),
+        "AR": sum(r["AR"] for r in all_rows) / len(all_rows),
     }
 
 
