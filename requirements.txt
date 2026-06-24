@@ -21,8 +21,12 @@ rouge-score==0.1.2
 scikit-learn==1.5.0
 scipy==1.13.0
 # Contre-mesure perplexité
-transformers==4.41.0
-torch==2.3.0
+transformers==5.1.0
+# torch>=2.6 requis par transformers (check_torch_load_is_safe, CVE-2025-32434).
+# torchvision/torchaudio ne sont pas utilisés par ce projet et ne doivent pas
+# être installés : leurs builds CPU sont pinnés sur une version de torch précise
+# et cassent le chargement de tout modèle HF (AutoModel) si torch est mis à jour.
+torch==2.12.1
 # Tracking
 mlflow==2.13.0
 # Analyse & viz

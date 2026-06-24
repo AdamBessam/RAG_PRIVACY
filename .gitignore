@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual Environment
 venv/
+venv_domain_test/
 ENV/
 env/
 .venv

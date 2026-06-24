@@ -27,6 +27,11 @@ SPACY_MODEL   = "en_core_web_sm"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM   = 384
 
+# --- Embedding (variante OpenAI, evaluation_zhang/run_evaluation_openai.py) ---
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBEDDING_DIM   = 1536
+OPENAI_EMBEDDING_PRICE_PER_TOKEN = 0.00000002  # $0.02 / 1M tokens
+
 # --- ChromaDB ---
 CHROMA_COLLECTION_NAME = "rag_benchmark"
 

@@ -1,13 +1,19 @@
 """
-CPB v3 — Brique 0 : Auto-découverte, inférence de domaine, génération de taxonomie.
+CPB v4 — Brique 0 : Auto-découverte, détection de domaine, génération de taxonomie.
 
-Executed ONCE at startup (not per query). All LLM calls use Llama 3.1 8B via Ollama
-(local, zero external API). Fully automatic: no hardcoded categories or taxonomy.
-If Llama is unavailable, bootstrap returns an empty result (used_fallback=True).
+Executed ONCE at startup (not per query). Reprend countermeasure_v3/cpb_bootstrap_v3.py
+à l'identique pour 0a/0c/0d/0e (toujours Llama 3.1 8B via Ollama pour la génération
+de catégories et l'enrichissement de phrases). Seule l'étape 0b change :
+
+  0b  Détection du domaine via nvidia/domain-classifier (DeBERTa-v3-base, 26
+      catégories web fixes — Health, Finance, Law_and_Government, ...), classifié
+      par chunk avec vote majoritaire. Repli sur Llama zero-shot (texte libre,
+      sans restriction de vocabulaire — cf. fix appliqué à countermeasure_v3)
+      si torch/transformers/le téléchargement des poids échouent.
 
 Steps:
   0a  Discover PII types from ChromaDB metadata (Path A) or Presidio on sample (Path B)
-  0b  Infer corpus domain via Llama zero-shot (JSON output)
+  0b  Infer corpus domain via nvidia/domain-classifier (fallback: Llama zero-shot)
   0c  Generate domain-specific sensitive categories + Presidio hints via Llama
   0d  Enrich each category with real anonymized phrases, topping up with Llama-generated
       synthetic phrases (looping over several calls if needed) until 15 phrases are reached
@@ -32,11 +38,16 @@ from config import LLAMA_MODEL, OLLAMA_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+NVIDIA_MODEL_ID = "nvidia/domain-classifier"
+NVIDIA_SAMPLE_SIZE = 30
+NVIDIA_MAX_CHARS = 2000  # le tokenizer DeBERTa tronque à 512 tokens de toute façon
+
 
 @dataclass
 class BootstrapResult:
     domain: str
     domain_confidence: float
+    domain_source: str            # "nvidia_domain_classifier" ou "llama_fallback"
     learned_types: set
     dynamic_categories: list
     dynamic_taxonomy: dict        # category -> list[str]
@@ -45,12 +56,73 @@ class BootstrapResult:
     used_fallback: bool = False
 
 
-class CPBBootstrapV3:
+class NvidiaDomainClassifier:
     """
-    Brique 0: one-shot corpus analysis that produces a BootstrapResult.
+    Optional CPB v4 enhancement: dédié à la détection de domaine via
+    nvidia/domain-classifier (DeBERTa-v3-base, 26 catégories web fixes).
+
+    Graceful degradation: si torch/transformers/huggingface_hub manquent, si
+    torch < 2.6 (cf. CVE-2025-32434, transformers refuse alors de charger les
+    poids .bin de microsoft/deberta-v3-base), ou si le téléchargement échoue,
+    is_available() renvoie False et CPBBootstrapV4 retombe sur Llama.
+    """
+
+    _MODEL_ID = NVIDIA_MODEL_ID
+
+    def __init__(self):
+        self._torch = None
+        self.model = None
+        self.tokenizer = None
+        self.config = None
+        try:
+            import torch
+            from torch import nn
+            from transformers import AutoConfig, AutoModel, AutoTokenizer
+            from huggingface_hub import PyTorchModelHubMixin
+
+            class _CustomModel(nn.Module, PyTorchModelHubMixin):
+                def __init__(self, config):
+                    super().__init__()
+                    self.model = AutoModel.from_pretrained(config["base_model"], dtype=torch.float32)
+                    self.dropout = nn.Dropout(config["fc_dropout"])
+                    self.fc = nn.Linear(self.model.config.hidden_size, len(config["id2label"]))
+
+                def forward(self, input_ids, attention_mask):
+                    features = self.model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+                    dropped = self.dropout(features)
+                    outputs = self.fc(dropped)
+                    return torch.softmax(outputs[:, 0, :], dim=1)
+
+            self._torch = torch
+            self.config = AutoConfig.from_pretrained(self._MODEL_ID)
+            self.tokenizer = AutoTokenizer.from_pretrained(self._MODEL_ID)
+            self.model = _CustomModel.from_pretrained(self._MODEL_ID)
+            self.model.eval()
+        except Exception as exc:
+            logger.warning(f"[CPBBootstrap 0b] nvidia/domain-classifier unavailable ({exc})")
+            self.model = None
+
+    def is_available(self) -> bool:
+        return self.model is not None
+
+    def classify(self, texts: list[str]) -> list[tuple[str, float]]:
+        """Retourne, pour chaque texte, (label_brut, confiance) — ex: ('Health', 0.93)."""
+        inputs = self.tokenizer(texts, return_tensors="pt", padding="longest", truncation=True)
+        with self._torch.no_grad():
+            outputs = self.model(inputs["input_ids"], inputs["attention_mask"])
+        confidences, predicted = outputs.max(dim=1)
+        return [
+            (self.config.id2label[idx.item()], float(conf.item()))
+            for idx, conf in zip(predicted, confidences)
+        ]
+
+
+class CPBBootstrapV4:
+    """
+    Brique 0 v4 : one-shot corpus analysis qui produit un BootstrapResult.
 
     Call .run() once in __init__ of the orchestrator. Results are cached
-    on the returned dataclass and passed to the v3 components.
+    on the returned dataclass and passed to the v4 components.
     """
 
     def __init__(
@@ -65,13 +137,14 @@ class CPBBootstrapV3:
         self.llama_model = llama_model
         self.seed = seed
         self._embedder = None
+        self._domain_classifier = None
 
     def run(self) -> BootstrapResult:
         """Execute steps 0a → 0e. Returns BootstrapResult. Never raises."""
         try:
             learned_types = self._step_0a()
             chunks_sample = self._sample_chunks(50)
-            domain, domain_confidence = self._step_0b(chunks_sample)
+            domain, domain_confidence, domain_source = self._step_0b(chunks_sample)
             dynamic_categories, category_hints = self._step_0c(domain)
             dynamic_taxonomy = self._step_0d(dynamic_categories, domain, chunks_sample, category_hints)
             centroids = self._step_0e(dynamic_taxonomy)
@@ -79,6 +152,7 @@ class CPBBootstrapV3:
             result = BootstrapResult(
                 domain=domain,
                 domain_confidence=domain_confidence,
+                domain_source=domain_source,
                 learned_types=learned_types,
                 dynamic_categories=dynamic_categories,
                 dynamic_taxonomy=dynamic_taxonomy,
@@ -88,7 +162,7 @@ class CPBBootstrapV3:
             )
             self._log_mlflow(result)
             logger.info(
-                f"[CPBBootstrap] domain={domain} ({domain_confidence:.2f}), "
+                f"[CPBBootstrap] domain={domain} ({domain_confidence:.2f}, source={domain_source}), "
                 f"categories={dynamic_categories}, types={len(learned_types)}"
             )
             return result
@@ -98,6 +172,7 @@ class CPBBootstrapV3:
             return BootstrapResult(
                 domain="general",
                 domain_confidence=0.0,
+                domain_source="none",
                 learned_types=set(),
                 dynamic_categories=[],
                 dynamic_taxonomy={},
@@ -106,7 +181,7 @@ class CPBBootstrapV3:
                 used_fallback=True,
             )
 
-    # ── Step 0a : PII type discovery (Presidio on raw documents) ─────────────
+    # ── Step 0a : PII type discovery (Presidio on raw documents) — identique v3 ──
 
     def _step_0a(self) -> set[str]:
         try:
@@ -126,9 +201,45 @@ class CPBBootstrapV3:
             logger.warning(f"[CPBBootstrap 0a] Presidio discovery failed: {exc}")
             return set()
 
-    # ── Step 0b : Domain inference ────────────────────────────────────────────
+    # ── Step 0b : Domain inference — nvidia/domain-classifier, repli Llama ──────
 
-    def _step_0b(self, chunks: list[str]) -> tuple[str, float]:
+    def _step_0b(self, chunks: list[str]) -> tuple[str, float, str]:
+        classifier = self._get_domain_classifier()
+        if classifier.is_available():
+            try:
+                domain, confidence = self._step_0b_nvidia(chunks, classifier)
+                return domain, confidence, "nvidia_domain_classifier"
+            except Exception as exc:
+                logger.warning(f"[CPBBootstrap 0b] nvidia classifier inference failed ({exc}), falling back to Llama")
+        else:
+            logger.warning("[CPBBootstrap 0b] nvidia/domain-classifier unavailable, falling back to Llama")
+
+        domain, confidence = self._step_0b_llama_fallback(chunks)
+        return domain, confidence, "llama_fallback"
+
+    def _step_0b_nvidia(self, chunks: list[str], classifier: NvidiaDomainClassifier) -> tuple[str, float]:
+        sample = [c[:NVIDIA_MAX_CHARS] for c in chunks[:NVIDIA_SAMPLE_SIZE] if c and c.strip()]
+        if not sample:
+            raise ValueError("no chunks available for domain classification")
+
+        predictions = classifier.classify(sample)
+        votes: dict[str, list[float]] = {}
+        for label, conf in predictions:
+            votes.setdefault(label, []).append(conf)
+
+        best_label = max(votes, key=lambda l: len(votes[l]))
+        vote_share = len(votes[best_label]) / len(predictions)
+        mean_conf = sum(votes[best_label]) / len(votes[best_label])
+        confidence = vote_share * mean_conf
+
+        domain = best_label.lower()
+        logger.info(
+            f"[CPBBootstrap 0b] nvidia/domain-classifier: {best_label} "
+            f"({len(votes[best_label])}/{len(predictions)} chunks, conf={confidence:.2f})"
+        )
+        return domain, confidence
+
+    def _step_0b_llama_fallback(self, chunks: list[str]) -> tuple[str, float]:
         excerpt = "\n---\n".join(c[:300] for c in chunks[:10])
         prompt = (
             "You are a corpus analyst. Based on the text excerpts below, "
@@ -144,10 +255,15 @@ class CPBBootstrapV3:
             confidence = float(parsed.get("confidence", 0.5))
             return domain, confidence
         except Exception as exc:
-            logger.warning(f"[CPBBootstrap 0b] Domain inference failed ({exc}), default=general")
+            logger.warning(f"[CPBBootstrap 0b] Llama fallback failed ({exc}), default=general")
             return "general", 0.0
 
-    # ── Step 0c : Category generation + Presidio hints ───────────────────────
+    def _get_domain_classifier(self) -> NvidiaDomainClassifier:
+        if self._domain_classifier is None:
+            self._domain_classifier = NvidiaDomainClassifier()
+        return self._domain_classifier
+
+    # ── Step 0c : Category generation + Presidio hints — identique v3 ────────
 
     def _step_0c(self, domain: str) -> tuple[list[str], dict[str, set[str]]]:
         prompt = (
@@ -189,7 +305,7 @@ class CPBBootstrapV3:
             logger.warning(f"[CPBBootstrap 0c] Category generation failed ({exc}), returning empty categories")
         return [], {}
 
-    # ── Step 0d : Anchor phrase enrichment ───────────────────────────────────
+    # ── Step 0d : Anchor phrase enrichment — identique v3 ───────────────────
 
     def _step_0d(
         self,
@@ -326,7 +442,7 @@ class CPBBootstrapV3:
             f"This information concerns {label} and requires protection.",
         ]
 
-    # ── Step 0e : SBERT centroids ─────────────────────────────────────────────
+    # ── Step 0e : SBERT centroids — identique v3 ──────────────────────────────
 
     def _step_0e(self, taxonomy: dict[str, list[str]]) -> dict[str, np.ndarray]:
         return self._build_centroids(taxonomy)
@@ -386,16 +502,18 @@ class CPBBootstrapV3:
     def _log_mlflow(self, result: BootstrapResult) -> None:
         try:
             import mlflow
-            mlflow.log_param("cpb_v3_domain", result.domain)
-            mlflow.log_param("cpb_v3_domain_confidence", round(result.domain_confidence, 3))
-            mlflow.log_param("cpb_v3_categories", ",".join(result.dynamic_categories))
-            mlflow.log_param("cpb_v3_learned_types", ",".join(sorted(result.learned_types)))
-            mlflow.log_param("cpb_v3_used_fallback", result.used_fallback)
-            mlflow.log_param("cpb_v3_seed", self.seed)
+            mlflow.log_param("cpb_v4_domain", result.domain)
+            mlflow.log_param("cpb_v4_domain_confidence", round(result.domain_confidence, 3))
+            mlflow.log_param("cpb_v4_domain_source", result.domain_source)
+            mlflow.log_param("cpb_v4_categories", ",".join(result.dynamic_categories))
+            mlflow.log_param("cpb_v4_learned_types", ",".join(sorted(result.learned_types)))
+            mlflow.log_param("cpb_v4_used_fallback", result.used_fallback)
+            mlflow.log_param("cpb_v4_seed", self.seed)
 
             payload = {
                 "domain": result.domain,
                 "domain_confidence": result.domain_confidence,
+                "domain_source": result.domain_source,
                 "categories": result.dynamic_categories,
                 "category_hints": {k: list(v) for k, v in result.category_hints.items()},
                 "taxonomy": {k: v for k, v in result.dynamic_taxonomy.items()},
@@ -407,7 +525,7 @@ class CPBBootstrapV3:
             ) as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
                 tmp_path = f.name
-            mlflow.log_artifact(tmp_path, artifact_path="cpb_v3_bootstrap")
+            mlflow.log_artifact(tmp_path, artifact_path="cpb_v4_bootstrap")
             os.unlink(tmp_path)
         except Exception:
             pass

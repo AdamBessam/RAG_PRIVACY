@@ -1,15 +1,19 @@
 """
-CPB v3 — Orchestrateur CPBNaiveRAGV3.
+CPB v4 — Orchestrateur CPBNaiveRAGV4.
 
 Pipeline (briques numérotées selon la spec):
-  B0  CPBBootstrapV3          — auto-découverte domaine + taxonomie (once in __init__)
-  B1  QueryRiskScorerV3       — scoring domain-aware + centroids dynamiques
+  B0  CPBBootstrapV4          — domaine (nvidia/domain-classifier + repli Llama) + taxonomie (once in __init__)
+  B1  QueryRiskScorerV4       — scoring domain-aware + centroids dynamiques
   B2  BudgetGate              — suppression directe si r > 0.85 ou jailbreak (v1)
   B3  PresidioPIIAnalyzer     — v1, couches activées selon le domaine inféré
   B4  PresidioPIIAnonymizer   — placeholders stables (v1)
   B5  LLM.generate            — masked_query + safe_chunks
-  B6  SADDetectorV3           — cascade F1→F2→F3 domain-aware + centroïdes dynamiques
+  B6  SADDetectorV4           — cascade F1→F2→F3 domain-aware + centroïdes dynamiques
   B7  CPBResponseGuard        — cascade 5 étapes (v1)
+
+Seule différence avec countermeasure_v3 : la source du domaine (B0) et le
+gating B3 qui en dépend. Tout le reste (B1/B2/B4/B5/B6/B7, retrieve/generate/run)
+est identique à cpb_naive_rag_v3.py.
 
 Imports v1 réutilisés sans modification :
   countermeasure.cpb_models   : AuditEntry
@@ -27,28 +31,35 @@ from config import TOP_K
 from countermeasure.cpb_models import AuditEntry
 from countermeasure.cpb_pii import BudgetGate, PresidioPIIAnalyzer, PresidioPIIAnonymizer
 from countermeasure.cpb_response_guard import CPBResponseGuard
-from countermeasure_v3.cpb_bootstrap_v3 import CPBBootstrapV3
-from countermeasure_v3.cpb_query_risk_v3 import QueryRiskScorerV3
-from countermeasure_v3.cpb_sad_detector_v3 import SADDetectorV3
+from countermeasure_v4.cpb_bootstrap_v4 import CPBBootstrapV4
+from countermeasure_v4.cpb_query_risk_v4 import QueryRiskScorerV4
+from countermeasure_v4.cpb_sad_detector_v4 import SADDetectorV4
 
-# B0 renvoie le domaine en texte libre (Llama répond "healthcare", "law/criminal
-# justice", "accounting/auditing"... jamais littéralement "medical"/"legal"/
-# "financial"). Une égalité stricte désactiverait scispaCy/GLiNER sur tous les
-# corpus. On matche donc par mots-clés, avec activation des deux par défaut
-# (sûr pour la détection PII) si aucun signal clair n'est trouvé.
-MEDICAL_KEYWORDS = {"medic", "health", "clinic", "patient", "hospital", "pharma", "diagnos"}
-LEGAL_FINANCIAL_KEYWORDS = {"legal", "law", "financ", "account", "tax", "bank", "insur", "court", "judic"}
+# B0 renvoie un domaine en minuscules tiré du vocabulaire fixe de
+# nvidia/domain-classifier (ex: "health", "law_and_government",
+# "business_and_industrial") — ou, en repli, du texte libre de Llama (ex:
+# "healthcare", "law/criminal justice") si le modèle nvidia est indisponible.
+# Cette table ne couvre que le vocabulaire fixe du classifieur : un domaine
+# non reconnu (vocabulaire Llama en repli, ou catégorie nvidia non mappée)
+# active les deux détecteurs par défaut (sûr pour la détection PII, jamais
+# les deux désactivés silencieusement).
+DOMAIN_LAYER_HINTS: dict[str, set[str]] = {
+    "health": {"scispacy"},
+    "science": {"scispacy"},
+    "law_and_government": {"gliner"},
+    "finance": {"gliner"},
+    "business_and_industrial": {"gliner"},
+}
 
 
-class CPBNaiveRAGV3:
+class CPBNaiveRAGV4:
     """
-    CPB v3 pipeline around NaiveRAG.
+    CPB v4 pipeline around NaiveRAG.
 
-    The only difference at instantiation time vs v1 is the bootstrap step (B0)
-    which auto-discovers the corpus domain and generates a domain-specific
-    taxonomy. All subsequent per-query logic mirrors cpb_naive_rag.py exactly,
-    except that B1 (QueryRiskScorerV3) and B6 (SADDetectorV3) use the dynamic
-    centroids and categories produced by B0.
+    La seule différence à l'instanciation par rapport à v3 est la source du
+    domaine détecté par B0 (nvidia/domain-classifier au lieu de Llama seul) et
+    la table d'activation B3 qui en tient compte. Toute la logique par requête
+    est identique à cpb_naive_rag_v3.py.
     """
 
     def __init__(
@@ -56,7 +67,7 @@ class CPBNaiveRAGV3:
         naive_rag,
         session_id: str | None = None,
         language: str = "en",
-        architecture_name: str = "cpb_naive_rag_v3",
+        architecture_name: str = "cpb_naive_rag_v4",
     ):
         self.naive_rag = naive_rag
         self.store = naive_rag.store
@@ -65,26 +76,22 @@ class CPBNaiveRAGV3:
         self.session_id = session_id or str(uuid4())
 
         # ── B0 Bootstrap (once) ───────────────────────────────────────────────
-        bootstrap = CPBBootstrapV3(store=self.store)
+        bootstrap = CPBBootstrapV4(store=self.store)
         self.bootstrap_result = bootstrap.run()
         domain = self.bootstrap_result.domain
 
-        # ── B1 QueryRiskScorerV3 ──────────────────────────────────────────────
-        self.query_risk_scorer = QueryRiskScorerV3(
+        # ── B1 QueryRiskScorerV4 ──────────────────────────────────────────────
+        self.query_risk_scorer = QueryRiskScorerV4(
             centroids=self.bootstrap_result.centroids,
             learned_types=self.bootstrap_result.learned_types,
             domain=domain,
         )
 
         # ── B3 PresidioPIIAnalyzer — conditional layer activation ─────────────
-        # scispaCy:  activé si signal médical (ou si aucun signal légal/financier)
-        # GLiNER:    activé si signal légal/financier (ou si aucun signal médical)
         self.pii_analyzer = PresidioPIIAnalyzer(language=language)
-        domain_lower = domain.lower()
-        is_medical_signal = any(kw in domain_lower for kw in MEDICAL_KEYWORDS)
-        is_legal_financial_signal = any(kw in domain_lower for kw in LEGAL_FINANCIAL_KEYWORDS)
-        use_scispacy = is_medical_signal or not is_legal_financial_signal
-        use_gliner = is_legal_financial_signal or not is_medical_signal
+        layers = DOMAIN_LAYER_HINTS.get(domain, {"scispacy", "gliner"})
+        use_scispacy = "scispacy" in layers
+        use_gliner = "gliner" in layers
         if not use_scispacy:
             self.pii_analyzer.medical_recognizer.nlp = None
         if not use_gliner:
@@ -99,8 +106,8 @@ class CPBNaiveRAGV3:
         # ── B7 CPBResponseGuard (v1) ──────────────────────────────────────────
         self.response_guard = CPBResponseGuard(self.pii_analyzer, self.pii_anonymizer)
 
-        # ── B6 SADDetectorV3 ──────────────────────────────────────────────────
-        self.sad_detector = SADDetectorV3(
+        # ── B6 SADDetectorV4 ──────────────────────────────────────────────────
+        self.sad_detector = SADDetectorV4(
             dynamic_taxonomy=self.bootstrap_result.dynamic_taxonomy,
             centroids=self.bootstrap_result.centroids,
             domain=domain,
@@ -233,7 +240,7 @@ class CPBNaiveRAGV3:
             )
             return self.generate(constrained, chunks).response
 
-        # B6 — SADDetectorV3 on raw LLM response (sees org/party names before Presidio)
+        # B6 — SADDetectorV4 on raw LLM response (sees org/party names before Presidio)
         sad = self.sad_detector.detect(
             query=masked_query,
             chunks=chunks,
@@ -294,10 +301,11 @@ class CPBNaiveRAGV3:
             "tokens_total":             tokens_total,
             "cost_usd":                 cost_usd,
             # ── B0 Bootstrap
-            "cpb_v3_domain":            br.domain,
-            "cpb_v3_domain_confidence": br.domain_confidence,
-            "cpb_v3_categories":        br.dynamic_categories,
-            "cpb_v3_used_fallback":     br.used_fallback,
+            "cpb_v4_domain":            br.domain,
+            "cpb_v4_domain_confidence": br.domain_confidence,
+            "cpb_v4_domain_source":     br.domain_source,
+            "cpb_v4_categories":        br.dynamic_categories,
+            "cpb_v4_used_fallback":     br.used_fallback,
             # ── B1 QueryRisk
             "cpb_query_risk":           retrieval["query_risk"].score,
             "cpb_query_risk_signals":   retrieval["query_risk"].signals,
