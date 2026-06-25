@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import OPENAI_API_KEY
+from config import OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
 
 GPT4O_MODEL = "gpt-4o"
 DATA_DIR = Path(__file__).parent.parent / "data" / "zhang_eval"
@@ -95,10 +95,12 @@ def compute_utility(
     """
     try:
         from datasets import Dataset
-        from langchain_openai import ChatOpenAI
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         from ragas import evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
         from ragas.metrics import answer_relevancy, answer_similarity, context_precision
+        from ragas.metrics.base import MetricWithEmbeddings
     except ImportError as e:
         raise ImportError(
             f"RAGAS dependencies missing: {e}\n"
@@ -114,10 +116,18 @@ def compute_utility(
     dataset = Dataset.from_dict(data)
 
     llm = LangchainLLMWrapper(ChatOpenAI(model=GPT4O_MODEL, api_key=OPENAI_API_KEY, temperature=0))
+    # RAGAS défaut silencieusement sur text-embedding-ada-002 (embedding_factory)
+    # si .embeddings n'est pas fixé. On force text-embedding-3-small pour rester
+    # cohérent avec le reste de la stack (et éviter un modèle d'embedding deprecated).
+    embeddings = LangchainEmbeddingsWrapper(
+        OpenAIEmbeddings(model=OPENAI_EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
+    )
 
     metrics = [context_precision, answer_similarity, answer_relevancy]
     for m in metrics:
         m.llm = llm
+        if isinstance(m, MetricWithEmbeddings):
+            m.embeddings = embeddings
 
     result = evaluate(dataset, metrics=metrics)
 
