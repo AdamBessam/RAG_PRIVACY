@@ -344,17 +344,17 @@ def main(skip_generation: bool = False) -> None:
     doc_index, attacks, references = load_5_queries()
     print(f"    doc_ids: {list(doc_index.keys())}")
 
-    print("\n[2] Building test ChromaDB (text-embedding-3-small)...")
-    build_test_chroma(doc_index)
-
     if skip_generation and responses_path.exists() and contexts_path.exists():
-        print("\n[3] Loading cached CPB v3 responses...")
+        print("\n[2-3] Loading cached CPB v3 responses (skip ChromaDB rebuild + generation)...")
         with open(responses_path, encoding="utf-8") as f:
             responses = json.load(f)
         with open(contexts_path, encoding="utf-8") as f:
             contexts_per_query = json.load(f)
         print(f"    {len(responses)} responses loaded.")
     else:
+        print("\n[2] Building test ChromaDB (text-embedding-3-small)...")
+        build_test_chroma(doc_index)
+
         print(f"\n[3] Running CPB v3 (gpt-4o-mini) on {len(attacks)} queries...")
         responses, contexts_per_query = run_cpb_v3_test(attacks)
         with open(responses_path, "w", encoding="utf-8") as f:
