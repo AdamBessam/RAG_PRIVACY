@@ -375,11 +375,6 @@ class PIMetric:
         verbose: bool = True,
     ) -> list[float]:
         """Compute PI scores for all (response, attack) pairs."""
-        if responses:
-            print("=" * 60, "\nDEBUG — 1ere instance\n" + "=" * 60)
-            self.debug_pi(responses[0], attacks[0]["doc_id"])
-            print("=" * 60)
-            import sys; sys.exit(0)
         scores = []
         for i, (resp, attack) in enumerate(zip(responses, attacks)):
             if verbose:
