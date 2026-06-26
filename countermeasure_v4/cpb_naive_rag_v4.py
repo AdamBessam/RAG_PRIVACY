@@ -28,10 +28,17 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import TOP_K
-from countermeasure.cpb_models import AuditEntry
+from countermeasure.cpb_models import (
+    AuditEntry,
+    PIISensitivityResult,
+    QueryRiskResult,
+    ResponseGuardResult,
+    SADResult,
+)
 from countermeasure.cpb_pii import BudgetGate, PresidioPIIAnalyzer, PresidioPIIAnonymizer
 from countermeasure.cpb_response_guard import CPBResponseGuard
-from countermeasure_v4.cpb_bootstrap_v4 import CPBBootstrapV4
+from countermeasure_v4.cpb_ablation import AblationConfig
+from countermeasure_v4.cpb_bootstrap_v4 import BootstrapResult, CPBBootstrapV4
 from countermeasure_v4.cpb_query_risk_v4 import QueryRiskScorerV4
 from countermeasure_v4.cpb_sad_detector_v4 import SADDetectorV4
 
@@ -68,16 +75,31 @@ class CPBNaiveRAGV4:
         session_id: str | None = None,
         language: str = "en",
         architecture_name: str = "cpb_naive_rag_v4",
+        ablation: AblationConfig | None = None,
     ):
         self.naive_rag = naive_rag
         self.store = naive_rag.store
         self.llm = naive_rag.llm
         self.architecture_name = architecture_name
         self.session_id = session_id or str(uuid4())
+        self.ablation = ablation or AblationConfig()
 
         # ── B0 Bootstrap (once) ───────────────────────────────────────────────
-        bootstrap = CPBBootstrapV4(store=self.store)
-        self.bootstrap_result = bootstrap.run()
+        if self.ablation.b0_bootstrap:
+            bootstrap = CPBBootstrapV4(store=self.store)
+            self.bootstrap_result = bootstrap.run()
+        else:
+            self.bootstrap_result = BootstrapResult(
+                domain="general",
+                domain_confidence=0.0,
+                domain_source="none",
+                learned_types=set(),
+                dynamic_categories=[],
+                dynamic_taxonomy={},
+                category_hints={},
+                centroids={},
+                used_fallback=True,
+            )
         domain = self.bootstrap_result.domain
 
         # ── B1 QueryRiskScorerV4 ──────────────────────────────────────────────
@@ -118,16 +140,19 @@ class CPBNaiveRAGV4:
     # ── Retrieve ──────────────────────────────────────────────────────────────
 
     def retrieve(self, query: str, top_k: int = TOP_K) -> dict:
-        query_risk = self.query_risk_scorer.score(query, session_id=self.session_id)
+        if self.ablation.b1_query_risk:
+            query_risk = self.query_risk_scorer.score(query, session_id=self.session_id)
+        else:
+            query_risk = QueryRiskResult(score=0.0, signals={}, ner_entities=[])
 
-        is_suppressed = (
+        is_suppressed = self.ablation.b2_budget_gate and (
             self.budget_gate.direct_suppression(query_risk.score)
             or self.budget_gate.jailbreak_suppression(query_risk.signals)
         )
         if is_suppressed:
             self.query_risk_scorer.flag_session(self.session_id)
-            query_pii_result = self.pii_analyzer.analyze(query)
-            masked_query, query_replacements = self.pii_anonymizer.anonymize_text(
+            query_pii_result = self._analyze_pii(query)
+            masked_query, query_replacements = self._anonymize_text(
                 query, query_pii_result.findings,
             )
             audit = AuditEntry(
@@ -154,8 +179,8 @@ class CPBNaiveRAGV4:
 
         raw_chunks = self.naive_rag.retrieve(query, top_k=top_k)
 
-        query_pii_result = self.pii_analyzer.analyze(query)
-        masked_query, query_replacements = self.pii_anonymizer.anonymize_text(
+        query_pii_result = self._analyze_pii(query)
+        masked_query, query_replacements = self._anonymize_text(
             query, query_pii_result.findings,
         )
 
@@ -163,11 +188,9 @@ class CPBNaiveRAGV4:
         max_pii_score = 0.0
 
         for chunk in raw_chunks:
-            pii_result = self.pii_analyzer.analyze(chunk.get("text", ""))
+            pii_result = self._analyze_pii(chunk.get("text", ""))
             max_pii_score = max(max_pii_score, pii_result.score)
-            safe_chunks.append(self.pii_anonymizer.anonymize_chunk(
-                chunk, pii_result, skip_types=set(),
-            ))
+            safe_chunks.append(self._anonymize_chunk(chunk, pii_result))
 
         audit = AuditEntry(
             query_risk=query_risk.score,
@@ -193,6 +216,37 @@ class CPBNaiveRAGV4:
             "query_pii_findings_count": len(query_pii_result.findings),
             "query_pii_replacements": query_replacements,
         }
+
+    # ── B3/B4 ablation helpers ───────────────────────────────────────────────
+
+    def _analyze_pii(self, text: str) -> PIISensitivityResult:
+        if self.ablation.b3_pii_analyzer:
+            return self.pii_analyzer.analyze(text)
+        return PIISensitivityResult(score=0.0, findings=[])
+
+    def _anonymize_text(self, text: str, findings: list) -> tuple[str, int]:
+        if self.ablation.b4_pii_anonymizer:
+            return self.pii_anonymizer.anonymize_text(text, findings)
+        return text or "", 0
+
+    def _anonymize_chunk(self, chunk: dict, pii_result: PIISensitivityResult) -> dict:
+        if self.ablation.b4_pii_anonymizer:
+            return self.pii_anonymizer.anonymize_chunk(chunk, pii_result, skip_types=set())
+        masked = dict(chunk)
+        masked["cpb_masked"] = False
+        masked["cpb_n_replacements"] = 0
+        masked["cpb_pii_score"] = pii_result.score
+        masked["cpb_findings"] = [
+            {
+                "entity_type": f.entity_type,
+                "text": f.text,
+                "start": f.start,
+                "end": f.end,
+                "score": f.score,
+            }
+            for f in pii_result.findings
+        ]
+        return masked
 
     # ── Generate ──────────────────────────────────────────────────────────────
 
@@ -241,18 +295,40 @@ class CPBNaiveRAGV4:
             return self.generate(constrained, chunks).response
 
         # B6 — SADDetectorV4 on raw LLM response (sees org/party names before Presidio)
-        sad = self.sad_detector.detect(
-            query=masked_query,
-            chunks=chunks,
-            response=llm_response.response,
-            reask_callback=sad_reask,
-        )
+        if self.ablation.b6_sad_detector:
+            sad = self.sad_detector.detect(
+                query=masked_query,
+                chunks=chunks,
+                response=llm_response.response,
+                reask_callback=sad_reask,
+            )
+        else:
+            sad = SADResult(
+                sad_detected=False,
+                attribute_categories=[],
+                max_similarity=0.0,
+                confidence=0.0,
+                decision="pass",
+                response=llm_response.response,
+                reasoning="B6 disabled (ablation)",
+                filter_triggered=0,
+            )
 
         # B7 — ResponseGuard cleans residual PII from SAD output
-        guarded = self.response_guard.guard(
-            response=sad.response,
-            reask_callback=reask,
-        )
+        if self.ablation.b7_response_guard:
+            guarded = self.response_guard.guard(
+                response=sad.response,
+                reask_callback=reask,
+            )
+        else:
+            guarded = ResponseGuardResult(
+                response=sad.response,
+                leakage_score=0.0,
+                decision="pass",
+                n_findings=0,
+                n_replacements=0,
+                reason="B7 disabled (ablation)",
+            )
 
         audit = retrieval["audit"]
         audit.leakage_score = guarded.leakage_score
@@ -295,6 +371,7 @@ class CPBNaiveRAGV4:
             "response":                 response,
             "architecture":             self.architecture_name,
             "llm":                      self.llm.name,
+            "ablation":                 self.ablation.name,
             # ── Tokens / cost
             "tokens_prompt":            tokens_prompt,
             "tokens_completion":        tokens_completion,
