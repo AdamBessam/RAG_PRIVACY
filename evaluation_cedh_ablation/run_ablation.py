@@ -107,6 +107,19 @@ def parse_target_entity(entity_hint: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def get_query_text(q: dict) -> str:
+    """95/1000 dgea-type entries in queries.json have a malformed "query"
+    field -- gpt-4o-mini sometimes returned {"type": "...", "query": "..."}
+    instead of a plain string inside the "questions" array (see
+    02_generate_queries.py's build_prompt_dgea). Extract the inner text
+    instead of stringifying the whole dict (which would pollute the attack
+    query with literal dict-repr noise)."""
+    text = q.get("query", "")
+    if isinstance(text, dict):
+        return text.get("query") or str(text)
+    return text if isinstance(text, str) else str(text)
+
+
 # ── Stratified query sample, cached once and reused by every variant ─────────
 
 def load_sampled_queries(n_total: int, seed: int) -> list[dict]:
@@ -150,27 +163,57 @@ def load_sampled_queries(n_total: int, seed: int) -> list[dict]:
 
 # ── CPB v4 inference, one ablation variant ────────────────────────────────────
 
-def run_cpb_v4(queries: list[dict], ablation) -> tuple[list[str], list[list[dict]]]:
+def run_cpb_v4(queries: list[dict], ablation, variant_dir: Path) -> tuple[list[str], list[list[dict]]]:
+    """Runs CPB v4 over `queries`, checkpointing one JSONL line per query to
+    variant_dir/checkpoint.jsonl as it goes -- a 300-query run is dozens of
+    LLM calls deep (risk scoring, PII analyzer, generation, SAD cascade,
+    response guard) per query; without this, one bad query near the end of
+    the loop would throw away every response computed before it, since
+    responses.json/raw_chunks.json are otherwise only written once the
+    whole variant finishes (see load_or_run_cpb)."""
     from countermeasure_v4.cpb_naive_rag_v4 import CPBNaiveRAGV4
     from llms.llama_llm import LlamaLLM
     from rag.naive_rag import NaiveRAG
     from test_contre_mesure_ildpiltest._store import IldpilTestStore
 
-    store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
-    llm = LlamaLLM()
-    naive_rag = NaiveRAG(store=store, llm=llm)
-    cpb = CPBNaiveRAGV4(naive_rag=naive_rag, ablation=ablation)
+    checkpoint_path = variant_dir / "checkpoint.jsonl"
+    done: dict[str, dict] = {}
+    if checkpoint_path.exists():
+        with open(checkpoint_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    row = json.loads(line)
+                    done[row["global_id"]] = row
+        print(f"  Resuming from checkpoint: {len(done)}/{len(queries)} queries already done")
 
-    responses: list[str] = []
-    raw_chunks_per_query: list[list[dict]] = []
+    remaining = [q for q in queries if q["global_id"] not in done]
 
-    for i, q in enumerate(queries):
-        print(f"  CPB v4 [{ablation.name}] [{i + 1}/{len(queries)}] {q['global_id']}...", end="\r")
-        result = cpb.run(q["query"], top_k=TOP_K)
-        responses.append(result["response"])
-        raw_chunks_per_query.append(result.get("raw_chunks", []))
+    if remaining:
+        store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
+        llm = LlamaLLM()
+        naive_rag = NaiveRAG(store=store, llm=llm)
+        cpb = CPBNaiveRAGV4(naive_rag=naive_rag, ablation=ablation)
 
-    print()
+        with open(checkpoint_path, "a", encoding="utf-8") as ckpt_f:
+            for i, q in enumerate(remaining):
+                print(f"  CPB v4 [{ablation.name}] [{len(done) + i + 1}/{len(queries)}] {q['global_id']}...", end="\r")
+                try:
+                    result = cpb.run(get_query_text(q), top_k=TOP_K)
+                    response = result["response"]
+                    raw_chunks = result.get("raw_chunks", [])
+                except Exception as exc:
+                    response = f"ERROR: {exc}"
+                    raw_chunks = []
+                row = {"global_id": q["global_id"], "response": response, "raw_chunks": raw_chunks}
+                done[q["global_id"]] = row
+                ckpt_f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                ckpt_f.flush()
+        print()
+
+    responses = [done[q["global_id"]]["response"] for q in queries]
+    raw_chunks_per_query = [done[q["global_id"]]["raw_chunks"] for q in queries]
+    checkpoint_path.unlink(missing_ok=True)
     return responses, raw_chunks_per_query
 
 
@@ -192,11 +235,11 @@ def load_or_run_cpb(
         return responses, raw_chunks_per_query, Embedder()
 
     print(f"  Running CPB v4 [{ablation.name}] (llama3.1:8b)...")
-    responses, raw_chunks_per_query = run_cpb_v4(queries, ablation)
+    variant_dir.mkdir(parents=True, exist_ok=True)
+    responses, raw_chunks_per_query = run_cpb_v4(queries, ablation, variant_dir)
     from embeddings.embedder import Embedder
     embedder = Embedder()  # not reused from the store -- cheap to load, keeps cache/skip path uniform
 
-    variant_dir.mkdir(parents=True, exist_ok=True)
     with open(responses_path, "w", encoding="utf-8") as f:
         json.dump(responses, f, ensure_ascii=False, indent=2)
     with open(chunks_path, "w", encoding="utf-8") as f:
@@ -246,7 +289,7 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
             pii_dicts = json.load(f)
     else:
         pii_results = [
-            compute_pii_leakage(response=resp, chunks=chunks, query=q["query"])
+            compute_pii_leakage(response=resp, chunks=chunks, query=get_query_text(q))
             for resp, chunks, q in zip(responses, raw_chunks_per_query, queries)
         ]
         pii_dicts = [asdict(r) for r in pii_results]
@@ -263,7 +306,7 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
         bert_f1_batch = compute_bert_f1_batch(responses, raw_chunks_per_query)
         quality_results = [
             compute_response_quality(
-                query=q["query"],
+                query=get_query_text(q),
                 response=resp,
                 chunks=chunks,
                 target_entity=parse_target_entity(q.get("entity_hint", "")),
@@ -306,7 +349,7 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
                 "global_id":        q.get("global_id", ""),
                 "query_id":         q.get("query_id", ""),
                 "query_type":       q.get("query_type", ""),
-                "query":            q.get("query", "")[:300],
+                "query":            get_query_text(q)[:300],
                 "target_entity":    parse_target_entity(q.get("entity_hint", "")) or "",
                 "response":         resp,
                 "pii_leaked":       pii_d["n_pii_leaked"],
