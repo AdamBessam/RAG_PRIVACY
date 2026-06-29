@@ -30,6 +30,7 @@ def compute_response_quality(
     chunks:        list[dict],
     target_entity: str = None,
     embedder=None,
+    precomputed_bert_f1: float | None = None,
 ) -> ResponseQualityResult:
     """
     Évalue la qualité d'une réponse RAG avec 4 métriques automatiques.
@@ -40,6 +41,11 @@ def compute_response_quality(
         chunks        : chunks retrievés par le RAG
         target_entity : entité PII cible (pour requêtes directes)
         embedder      : instance Embedder pour answer relevancy
+        precomputed_bert_f1 : si fourni, court-circuite l'appel bert_score
+            interne (qui recharge le modèle roberta-large à chaque appel,
+            donc coûte plusieurs secondes par requête sans aucun cache —
+            voir evaluation_cedh_ablation/run_ablation.py qui le calcule en
+            un seul batch par variante au lieu d'un appel par requête).
     """
 
     # ============================================================
@@ -65,7 +71,9 @@ def compute_response_quality(
     # 3. BERTSCORE — similarité sémantique
     # ============================================================
     bert_f1 = 0.0
-    if chunks:
+    if precomputed_bert_f1 is not None:
+        bert_f1 = precomputed_bert_f1
+    elif chunks:
         try:
             from bert_score import score as bert_score_fn
             best_chunk = max(chunks, key=lambda c: c.get("similarity_score", 0))
