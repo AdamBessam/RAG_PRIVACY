@@ -314,26 +314,38 @@ class SADDetectorV4(SADDetector):
             sbert_category_scores=category_scores,
         )
 
-    # ── LLM reformulation: generalize sensitive specifics, keep the rest ──────
+    # ── LLM reformulation: remove the sensitive link, keep the rest readable ──
 
     def _synthesize_response(self, response: str, categories: list[str]) -> str | None:
         """
-        Asks Phi-3 to rewrite the response so the sensitive specifics flagged
-        in `categories` are generalized into non-identifying terms (e.g. "a
-        health condition" instead of a named diagnosis) while everything else
-        stays as-is. Returns None if the call fails or yields nothing usable
-        — callers fall back to sentence-level masking in that case.
+        Asks Phi-3 to rewrite the response so it no longer links an
+        identifiable individual to the flagged categories, while keeping
+        every other fact and reading naturally.
+
+        Earlier version asked Phi-3 to "generalize" the detail (e.g. "a
+        health condition" instead of a named diagnosis) — but the project's
+        own SAD definition counts that as a disclosure too ("links an
+        individual, even anonymized, to a sensitive attribute" — a vague
+        category is still a category). That made the post-synthesis Phi-3
+        recheck fail almost every time, falling through to masking (and
+        often block) regardless. The fix: ask for removal/restructuring, not
+        softening — same end goal as masking, but phrased so the rewrite
+        reads as natural prose instead of leaving [REDACTED]-style gaps.
+
+        Returns None if the call fails or yields nothing usable — callers
+        fall back to sentence-level masking in that case.
         """
         categories_str = ", ".join(categories)
         prompt = (
-            "Rewrite the response below so it no longer discloses specific, "
-            f"identifiable details related to: {categories_str}. "
-            "Generalize each sensitive detail into a broad, non-identifying term "
-            "(e.g. 'a health condition' instead of a named diagnosis or procedure, "
-            "'a personal belief' instead of a specific religion, "
-            "'a political affiliation' instead of a named party). "
+            "Rewrite the response below so it no longer links any identifiable "
+            f"individual to a sensitive personal attribute related to: {categories_str}. "
+            "Remove those specific facts entirely rather than rephrasing them in "
+            "vaguer terms — do not say things like 'a health condition' or 'a "
+            "political belief' either, since that still discloses the link. "
+            "Restructure the surrounding sentences so the text still reads "
+            "naturally without the removed information. "
             "Keep every other fact in the response exactly as it is. "
-            "Do not add disclaimers, do not mention that anything was changed, "
+            "Do not add disclaimers, do not mention that anything was removed, "
             "do not invent new information.\n\n"
             f"Response to rewrite:\n{response}\n\n"
             "Rewritten response (text only, no preamble):"
