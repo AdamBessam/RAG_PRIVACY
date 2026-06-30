@@ -42,6 +42,7 @@ def main():
     from countermeasure_v4.cpb_ablation import AblationConfig
     from llms.llama_llm import LlamaLLM
     from rag.naive_rag import NaiveRAG
+    from metrics.pii_leakage import compute_pii_leakage
 
     print("Connexion ChromaDB + chargement CPB v4 (bootstrap inclus, peut prendre 1-2 min)...")
     store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
@@ -51,6 +52,7 @@ def main():
 
     n_block_before = n_block_after = 0
     n_synthesize = n_mask = n_pass = 0
+    leaked_before_total = leaked_after_total = pii_total_total = 0
 
     for item in sample:
         sep(f"[{item['query_type']}] {item['global_id']}")
@@ -66,16 +68,35 @@ def main():
         try:
             result = cpb.run(item["query"], top_k=TOP_K)
             new_response = result["response"]
+            raw_chunks = result.get("raw_chunks", [])
             sad_decision = result.get("cpb_sad_decision", "?")
             sad_categories = result.get("cpb_sad_categories", [])
         except Exception as exc:
             new_response = f"ERROR: {exc}"
+            raw_chunks = []
             sad_decision = "error"
             sad_categories = []
 
         print(f"\n--- NOUVELLE reponse (B6 patche, seuil bloquant=3 cat. + synthese LLM) ---")
         print(new_response)
         print(f"\nB6 decision: {sad_decision}   categories: {sad_categories}")
+
+        # Meme requete -> meme retrieval (deterministe) -> on peut comparer la
+        # fuite de l'ancienne ET de la nouvelle reponse sur les MEMES chunks.
+        pii_before = compute_pii_leakage(
+            response=item["old_full_pipeline_response"], chunks=raw_chunks, query=item["query"],
+        )
+        pii_after = compute_pii_leakage(
+            response=new_response, chunks=raw_chunks, query=item["query"],
+        )
+        print(f"\nFuite PII AVANT : {pii_before.n_pii_leaked}/{pii_before.n_pii_total} "
+              f"({pii_before.leakage_rate:.0%})  {[e['text'] for e in pii_before.leaked_entities]}")
+        print(f"Fuite PII APRES : {pii_after.n_pii_leaked}/{pii_after.n_pii_total} "
+              f"({pii_after.leakage_rate:.0%})  {[e['text'] for e in pii_after.leaked_entities]}")
+
+        leaked_before_total += pii_before.n_pii_leaked
+        leaked_after_total += pii_after.n_pii_leaked
+        pii_total_total += pii_after.n_pii_total
 
         if new_response.strip().startswith("This information cannot be disclosed"):
             n_block_after += 1
@@ -90,9 +111,12 @@ def main():
     print(f"  Blocages totaux AVANT : {n_block_before}/{len(sample)}")
     print(f"  Blocages totaux APRES : {n_block_after}/{len(sample)}")
     print(f"  Decisions B6 (nouveau): synthesize={n_synthesize}  mask={n_mask}  pass={n_pass}  block={n_block_after}")
-    print("\nA verifier manuellement : est-ce que les reponses 'synthesize' reformulent")
-    print("correctement (generalisent les details sensibles) sans inventer d'info ni")
-    print("laisser fuiter le detail original tel quel.")
+    rate_before = leaked_before_total / pii_total_total if pii_total_total else 0.0
+    rate_after = leaked_after_total / pii_total_total if pii_total_total else 0.0
+    print(f"\n  PII leakage AVANT : {leaked_before_total}/{pii_total_total} ({rate_before:.1%})")
+    print(f"  PII leakage APRES : {leaked_after_total}/{pii_total_total} ({rate_after:.1%})")
+    print("\nA verifier manuellement en plus du chiffre : est-ce que les reponses 'synthesize'")
+    print("reformulent correctement (generalisent les details sensibles) sans inventer d'info.")
 
 
 if __name__ == "__main__":
