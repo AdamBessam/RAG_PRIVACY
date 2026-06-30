@@ -101,12 +101,34 @@ class SADDetectorV4(SADDetector):
 
         # F2 — SBERT centroid proximity (sentence-level, max-pooling)
         hit_categories, max_sim, category_scores = self._sbert_proximity(response)
-        # If SBERT found nothing, pass all dynamic categories to F3
-        candidate_categories = (
-            hit_categories if hit_categories else list(self.dynamic_taxonomy.keys())
-        )
 
-        # F3 — Phi-3 Mini judgment (always runs when F1 passes)
+        # F2 acts as a GATE, not just a hint. If no sentence is semantically
+        # close to any sensitive-category centroid, the response is very
+        # unlikely to disclose a special attribute -> pass without F3.
+        #
+        # The previous behavior (hand the ENTIRE taxonomy to Phi-3 when SBERT
+        # found nothing) made phi3:mini hallucinate disclosures on ordinary
+        # legal text: "what articles were cited" was flagged as
+        # RELIGIOUS_BELIEF + SEXUAL_ORIENTATION and blocked, with the same
+        # categories firing on unrelated queries (the tell of a primed false
+        # positive). A genuine health/religion disclosure DOES register
+        # SBERT proximity to its centroid, so trusting F2's negative is safe.
+        if not hit_categories:
+            return SADResult(
+                sad_detected=False,
+                attribute_categories=[],
+                max_similarity=max_sim,
+                confidence=0.0,
+                decision="pass",
+                response=response,
+                reasoning=f"F2: no sentence within SBERT threshold of any sensitive centroid (max_sim={max_sim:.2f})",
+                filter_triggered=2,
+                sbert_category_scores=category_scores,
+            )
+
+        # F3 — Phi-3 Mini judgment, only on the categories SBERT actually
+        # flagged (not the whole taxonomy), to keep the judge grounded.
+        candidate_categories = hit_categories
         phi3 = self._phi3_judge(query, chunks, response, candidate_categories)
 
         if not phi3["sad_detected"]:
