@@ -266,9 +266,25 @@ class CPBBootstrapV4:
     # ── Step 0c : Category generation + Presidio hints — identique v3 ────────
 
     def _step_0c(self, domain: str) -> tuple[list[str], dict[str, set[str]]]:
+        # These categories feed B6 (SAD detector), whose job is to catch
+        # *special* sensitive attributes described in natural language (a
+        # health condition, a political opinion...) that no named-entity
+        # masker can mask. Ordinary identifiers/contact data (names, dates,
+        # addresses, employer, IDs) are already masked by Presidio in B3/B4
+        # and B7 — including them here makes B6 block ordinary biographical
+        # facts ("represented by a solicitor in London" flagged as
+        # EMPLOYMENT_HISTORY), so the prompt explicitly excludes them.
         prompt = (
             f"You are a privacy expert. For a corpus in the '{domain}' domain, "
-            "list 5 to 10 categories of sensitive personal attributes that must be protected.\n"
+            "list the categories of SPECIAL sensitive personal attributes — facts that "
+            "reveal an intimate or protected aspect of a person when described in natural "
+            "language (for example: a health condition, a political opinion, a religious "
+            "belief, sexual orientation, ethnic origin, or the domain's equivalent "
+            "sensitive facts).\n"
+            "Do NOT include ordinary identifiers or contact data such as names, dates, "
+            "addresses, phone numbers, emails, employer/job, education, or ID numbers — "
+            "those are masked separately by a dedicated PII engine and must be EXCLUDED here.\n"
+            "List between 3 and 8 such categories.\n"
             "For each category, also list which Presidio NLP entity types would signal its presence in text.\n"
             "Available Presidio entity types: PERSON, LOCATION, ORGANIZATION, DATE_TIME, NRP, "
             "NATIONALITY, MEDICAL_LICENSE, DISEASE, CHEMICAL, IBAN_CODE, CREDIT_CARD, "
@@ -277,7 +293,7 @@ class CPBBootstrapV4:
             "Respond in valid JSON only.\n"
             'Example: {"categories": ['
             '{"name": "HEALTH", "presidio_types": ["MEDICAL_LICENSE", "DISEASE", "CHEMICAL"]}, '
-            '{"name": "IMMIGRATION_STATUS", "presidio_types": ["NRP", "NATIONALITY", "LOCATION"]}'
+            '{"name": "POLITICAL_OPINION", "presidio_types": ["NRP", "ORGANIZATION"]}'
             ']}'
         )
         try:
@@ -298,7 +314,11 @@ class CPBBootstrapV4:
                 if types:
                     hints[name] = types
 
-            if 5 <= len(categories) <= 10:
+            # Lowered from 5 (the old broad-taxonomy minimum): narrowing to
+            # special-category-only attributes legitimately yields fewer
+            # categories, and the old floor would otherwise reject a valid
+            # narrow list and silently return [] (disabling B6 entirely).
+            if 3 <= len(categories) <= 8:
                 logger.info(f"[CPBBootstrap 0c] {len(categories)} categories with {sum(len(v) for v in hints.values())} hints")
                 return categories, hints
         except Exception as exc:
