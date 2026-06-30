@@ -11,8 +11,12 @@ nvidia/domain-classifier ou du repli Llama.
   - domain passed to Phi-3 prompt for contextually-aware judgment
   - candidate categories default to dynamic_taxonomy.keys() instead of SENSITIVE_TAXONOMY.keys()
 
-The 3-filter cascade (F1 regex → F2 SBERT → F3 Phi-3) and 3-tier decision logic
-(block / mask / reask) are unchanged from v1.
+The F1 regex -> F2 SBERT -> F3 Phi-3 detection cascade is unchanged from v1.
+The action taken once a SAD is confirmed is NOT: v1's confidence/category-count
+tiered block/mask/reask is replaced by a single quality-first cascade (see
+_apply_decision) — synthesis always tried before masking, masking always
+tried before a full refusal, each step re-verified by Phi-3 before being
+trusted.
 """
 
 import json
@@ -30,13 +34,10 @@ from countermeasure.sad_detector import (
     SADDetector,
     INDIVIDUAL_RE,
     DEFAULT_SBERT_THRESHOLD,
-    MASK_CONFIDENCE_THRESHOLD,
 )
 
-# v4-only override of the parent's BLOCK_CATEGORY_COUNT=2: a full block now
-# needs 3+ sensitive categories at once, and even then a masked synthesis is
-# tried first instead of discarding the whole response outright.
-BLOCK_CATEGORY_COUNT_V4 = 3
+# A masked response that redacted almost everything isn't worth returning —
+# skip straight to a full refusal instead of a near-empty "synthesis".
 BLOCK_MASK_FRACTION_LIMIT = 0.70
 
 
@@ -186,7 +187,7 @@ class SADDetectorV4(SADDetector):
                 "reasoning": f"Phi-3 unavailable ({exc}), defaulting to SBERT signal",
             }
 
-    # ── Override: 3-category block (not 2) + masked synthesis before refusal ──
+    # ── Override: quality-first cascade — synthesis, then mask, then block ────
 
     def _apply_decision(
         self,
@@ -200,107 +201,65 @@ class SADDetectorV4(SADDetector):
         category_scores: dict,
         reask_callback,
     ) -> SADResult:
+        """
+        v1 picked block/mask/reask by confidence and category count. v4
+        instead always tries the least destructive option first, regardless
+        of confidence or how many categories are involved, and verifies each
+        attempt with the same Phi-3 judge that confirmed the SAD before
+        trusting it:
 
-        # Tier 3 — 3+ sensitive categories: try an LLM reformulation first
-        # (generalize the sensitive specifics, keep the rest), then a plain
-        # sentence-level mask (Phi-3-verified, see _mask_or_block), and only
-        # fall back to a full refusal if both would leave a near-empty /
-        # still-unsafe response.
-        if len(categories) >= BLOCK_CATEGORY_COUNT_V4:
-            rewritten = self._synthesize_response(response, categories)
-            if rewritten and not INDIVIDUAL_RE.search(rewritten):
-                verify = self._phi3_judge(query, chunks, rewritten, categories)
-                if not verify["sad_detected"]:
-                    return SADResult(
-                        sad_detected=True,
-                        attribute_categories=categories,
-                        max_similarity=max_similarity,
-                        confidence=confidence,
-                        decision="synthesize",
-                        response=rewritten,
-                        reasoning=reasoning + " (block tier downgraded to LLM-reformulated synthesis)",
-                        filter_triggered=3,
-                        sbert_category_scores=category_scores,
-                    )
-
-            masked = self._mask_sensitive(response, categories)
-            sentences = [s for s in re.split(r"(?<=[.!?])\s+", response) if s.strip()]
-            n_total = len(sentences) or 1
-            n_redacted = masked.count("[SENSITIVE_ATTRIBUTE_REDACTED]")
-            frac_masked = n_redacted / n_total
-            leftover = masked.replace("[SENSITIVE_ATTRIBUTE_REDACTED]", "").strip()
-
-            if frac_masked < BLOCK_MASK_FRACTION_LIMIT and leftover:
-                return self._mask_or_block(
-                    query=query, chunks=chunks, masked=masked, categories=categories,
-                    confidence=confidence, reasoning=reasoning, max_similarity=max_similarity,
-                    category_scores=category_scores,
-                    note=f" (block tier downgraded to sentence mask, {frac_masked:.0%} of sentences redacted)",
+          1. LLM reformulation (generalize the sensitive specifics, keep
+             the rest of the answer intact and readable)
+          2. sentence-level mask (cruder, but keeps non-sensitive sentences)
+          3. full refusal — only if neither of the above is safe or usable
+        """
+        # 1. Synthesis
+        rewritten = self._synthesize_response(response, categories)
+        if rewritten and not INDIVIDUAL_RE.search(rewritten):
+            verify = self._phi3_judge(query, chunks, rewritten, categories)
+            if not verify["sad_detected"]:
+                return SADResult(
+                    sad_detected=True,
+                    attribute_categories=categories,
+                    max_similarity=max_similarity,
+                    confidence=confidence,
+                    decision="synthesize",
+                    response=rewritten,
+                    reasoning=reasoning + " (resolved via LLM-reformulated synthesis)",
+                    filter_triggered=3,
+                    sbert_category_scores=category_scores,
                 )
-            return SADResult(
-                sad_detected=True,
-                attribute_categories=categories,
-                max_similarity=max_similarity,
-                confidence=confidence,
-                decision="block",
-                response=(
-                    "This information cannot be disclosed as it contains "
-                    "multiple sensitive personal attributes."
-                ),
-                reasoning=reasoning,
-                filter_triggered=3,
-                sbert_category_scores=category_scores,
-            )
 
-        # Tier 1 — low confidence: mask, then verify with Phi-3 that the
-        # masked sentences actually removed the flagged categories (SBERT
-        # sentence-level masking can miss phrasings the centroid doesn't
-        # score high enough, even when Phi-3 itself flagged the category —
-        # escalate to a full block rather than silently under-mask).
-        if confidence < MASK_CONFIDENCE_THRESHOLD:
-            masked = self._mask_sensitive(response, categories)
+        # 2. Sentence-level mask (skip straight to refusal if it would gut
+        # the response, no point Phi-3-verifying an near-empty answer)
+        masked = self._mask_sensitive(response, categories)
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", response) if s.strip()]
+        n_total = len(sentences) or 1
+        n_redacted = masked.count("[SENSITIVE_ATTRIBUTE_REDACTED]")
+        frac_masked = n_redacted / n_total
+        leftover = masked.replace("[SENSITIVE_ATTRIBUTE_REDACTED]", "").strip()
+
+        if frac_masked < BLOCK_MASK_FRACTION_LIMIT and leftover:
             return self._mask_or_block(
                 query=query, chunks=chunks, masked=masked, categories=categories,
                 confidence=confidence, reasoning=reasoning, max_similarity=max_similarity,
-                category_scores=category_scores, note="",
+                category_scores=category_scores, note=" (synthesis unavailable/unsafe, sentence-masked)",
             )
 
-        if reask_callback is not None:
-            try:
-                new_response = reask_callback(categories[0])
-                if not INDIVIDUAL_RE.search(new_response):
-                    return SADResult(
-                        sad_detected=True,
-                        attribute_categories=categories,
-                        max_similarity=max_similarity,
-                        confidence=confidence,
-                        decision="reask",
-                        response=new_response,
-                        reasoning=f"Constrained reask resolved {categories[0]} disclosure",
-                        filter_triggered=3,
-                        sbert_category_scores=category_scores,
-                    )
-                recheck_cats, _, _ = self._sbert_proximity(new_response)
-                if not recheck_cats:
-                    return SADResult(
-                        sad_detected=True,
-                        attribute_categories=categories,
-                        max_similarity=max_similarity,
-                        confidence=confidence,
-                        decision="reask",
-                        response=new_response,
-                        reasoning=f"Constrained reask resolved {categories[0]} disclosure",
-                        filter_triggered=3,
-                        sbert_category_scores=category_scores,
-                    )
-            except Exception:
-                pass
-
-        masked = self._mask_sensitive(response, categories)
-        return self._mask_or_block(
-            query=query, chunks=chunks, masked=masked, categories=categories,
-            confidence=confidence, reasoning=reasoning, max_similarity=max_similarity,
-            category_scores=category_scores, note=" (reask failed, masked)",
+        # 3. Last resort
+        return SADResult(
+            sad_detected=True,
+            attribute_categories=categories,
+            max_similarity=max_similarity,
+            confidence=confidence,
+            decision="block",
+            response=(
+                "This information cannot be disclosed as it contains "
+                "multiple sensitive personal attributes."
+            ),
+            reasoning=reasoning,
+            filter_triggered=3,
+            sbert_category_scores=category_scores,
         )
 
     # ── Verify a masked response actually removed the flagged categories ──────

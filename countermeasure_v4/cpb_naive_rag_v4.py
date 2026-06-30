@@ -283,24 +283,15 @@ class CPBNaiveRAGV4:
             )
             return self.generate(strengthened, chunks).response
 
-        def sad_reask(attribute_category: str) -> str:
-            constrained = (
-                masked_query
-                + f"\n\nPrivacy instruction: answer this question without revealing "
-                + f"any {attribute_category} information about any individual. "
-                + "Do not mention specific medical conditions, diagnoses, "
-                + "political beliefs, ethnic origins, sexual orientation, "
-                + "or religious beliefs."
-            )
-            return self.generate(constrained, chunks).response
-
         # B6 — SADDetectorV4 on raw LLM response (sees org/party names before Presidio)
+        # reask_callback is unused: v4's decision cascade always tries an
+        # LLM reformulation of the existing response before falling back to
+        # masking, instead of v1's constrained-regeneration reask tier.
         if self.ablation.b6_sad_detector:
             sad = self.sad_detector.detect(
                 query=masked_query,
                 chunks=chunks,
                 response=llm_response.response,
-                reask_callback=sad_reask,
             )
         else:
             sad = SADResult(
