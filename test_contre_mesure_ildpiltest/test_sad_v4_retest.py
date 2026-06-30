@@ -10,6 +10,7 @@ pour que B6 voie le meme contexte que lors du run original).
 
 Usage:
     python test_contre_mesure_ildpiltest/test_sad_v4_retest.py
+    python test_contre_mesure_ildpiltest/test_sad_v4_retest.py sad_v4_retest_sample2.json
 """
 __import__('pysqlite3')
 import sys
@@ -23,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from test_contre_mesure_ildpiltest.config import CHROMA_DIR, COLLECTION_NAME, TOP_K
 from test_contre_mesure_ildpiltest._store import IldpilTestStore
 
-SAMPLE_PATH = Path(__file__).parent / "sad_v4_retest_sample.json"
+SAMPLE_NAME = sys.argv[1] if len(sys.argv) > 1 else "sad_v4_retest_sample.json"
+SAMPLE_PATH = Path(__file__).parent / SAMPLE_NAME
 
 
 def sep(title: str):
@@ -51,7 +53,7 @@ def main():
     cpb = CPBNaiveRAGV4(naive_rag=naive_rag, ablation=AblationConfig(name="full_pipeline"))
 
     n_block_before = n_block_after = 0
-    n_synthesize = n_mask = n_pass = 0
+    n_synthesize = n_mask = n_pass = n_reask = n_other = 0
     leaked_before_total = leaked_after_total = pii_total_total = 0
 
     for item in sample:
@@ -106,11 +108,16 @@ def main():
             n_mask += 1
         elif sad_decision == "pass":
             n_pass += 1
+        elif sad_decision == "reask":
+            n_reask += 1
+        else:
+            n_other += 1
 
     sep("RESUME")
     print(f"  Blocages totaux AVANT : {n_block_before}/{len(sample)}")
     print(f"  Blocages totaux APRES : {n_block_after}/{len(sample)}")
-    print(f"  Decisions B6 (nouveau): synthesize={n_synthesize}  mask={n_mask}  pass={n_pass}  block={n_block_after}")
+    print(f"  Decisions B6 (nouveau): synthesize={n_synthesize}  mask={n_mask}  "
+          f"reask={n_reask}  pass={n_pass}  block={n_block_after}  autre={n_other}")
     rate_before = leaked_before_total / pii_total_total if pii_total_total else 0.0
     rate_after = leaked_after_total / pii_total_total if pii_total_total else 0.0
     print(f"\n  PII leakage AVANT : {leaked_before_total}/{pii_total_total} ({rate_before:.1%})")
