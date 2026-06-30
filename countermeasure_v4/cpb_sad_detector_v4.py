@@ -31,8 +31,13 @@ from countermeasure.sad_detector import (
     INDIVIDUAL_RE,
     DEFAULT_SBERT_THRESHOLD,
     MASK_CONFIDENCE_THRESHOLD,
-    BLOCK_CATEGORY_COUNT,
 )
+
+# v4-only override of the parent's BLOCK_CATEGORY_COUNT=2: a full block now
+# needs 3+ sensitive categories at once, and even then a masked synthesis is
+# tried first instead of discarding the whole response outright.
+BLOCK_CATEGORY_COUNT_V4 = 3
+BLOCK_MASK_FRACTION_LIMIT = 0.70
 
 
 class SADDetectorV4(SADDetector):
@@ -180,3 +185,166 @@ class SADDetectorV4(SADDetector):
                 "confidence": 0.55,
                 "reasoning": f"Phi-3 unavailable ({exc}), defaulting to SBERT signal",
             }
+
+    # ── Override: 3-category block (not 2) + masked synthesis before refusal ──
+
+    def _apply_decision(
+        self,
+        query: str,
+        chunks: list[dict],
+        response: str,
+        categories: list[str],
+        confidence: float,
+        reasoning: str,
+        max_similarity: float,
+        category_scores: dict,
+        reask_callback,
+    ) -> SADResult:
+
+        # Tier 3 — 3+ sensitive categories: try an LLM reformulation first
+        # (generalize the sensitive specifics, keep the rest), then a plain
+        # sentence-level mask, and only fall back to a full refusal if both
+        # would leave a near-empty / still-unsafe response.
+        if len(categories) >= BLOCK_CATEGORY_COUNT_V4:
+            rewritten = self._synthesize_response(response, categories)
+            if rewritten:
+                recheck_cats, _, _ = self._sbert_proximity(rewritten)
+                if len(recheck_cats) < BLOCK_CATEGORY_COUNT_V4 and not INDIVIDUAL_RE.search(rewritten):
+                    return SADResult(
+                        sad_detected=True,
+                        attribute_categories=categories,
+                        max_similarity=max_similarity,
+                        confidence=confidence,
+                        decision="synthesize",
+                        response=rewritten,
+                        reasoning=reasoning + " (block tier downgraded to LLM-reformulated synthesis)",
+                        filter_triggered=3,
+                        sbert_category_scores=category_scores,
+                    )
+
+            masked = self._mask_sensitive(response, categories)
+            sentences = [s for s in re.split(r"(?<=[.!?])\s+", response) if s.strip()]
+            n_total = len(sentences) or 1
+            n_redacted = masked.count("[SENSITIVE_ATTRIBUTE_REDACTED]")
+            frac_masked = n_redacted / n_total
+            leftover = masked.replace("[SENSITIVE_ATTRIBUTE_REDACTED]", "").strip()
+
+            if frac_masked < BLOCK_MASK_FRACTION_LIMIT and leftover:
+                return SADResult(
+                    sad_detected=True,
+                    attribute_categories=categories,
+                    max_similarity=max_similarity,
+                    confidence=confidence,
+                    decision="mask",
+                    response=masked,
+                    reasoning=reasoning + f" (block tier downgraded to sentence mask, {frac_masked:.0%} of sentences redacted)",
+                    filter_triggered=3,
+                    sbert_category_scores=category_scores,
+                )
+            return SADResult(
+                sad_detected=True,
+                attribute_categories=categories,
+                max_similarity=max_similarity,
+                confidence=confidence,
+                decision="block",
+                response=(
+                    "This information cannot be disclosed as it contains "
+                    "multiple sensitive personal attributes."
+                ),
+                reasoning=reasoning,
+                filter_triggered=3,
+                sbert_category_scores=category_scores,
+            )
+
+        # Tier 1 / Tier 2 — unchanged from the parent (mask or constrained reask)
+        if confidence < MASK_CONFIDENCE_THRESHOLD:
+            return SADResult(
+                sad_detected=True,
+                attribute_categories=categories,
+                max_similarity=max_similarity,
+                confidence=confidence,
+                decision="mask",
+                response=self._mask_sensitive(response, categories),
+                reasoning=reasoning,
+                filter_triggered=3,
+                sbert_category_scores=category_scores,
+            )
+
+        if reask_callback is not None:
+            try:
+                new_response = reask_callback(categories[0])
+                if not INDIVIDUAL_RE.search(new_response):
+                    return SADResult(
+                        sad_detected=True,
+                        attribute_categories=categories,
+                        max_similarity=max_similarity,
+                        confidence=confidence,
+                        decision="reask",
+                        response=new_response,
+                        reasoning=f"Constrained reask resolved {categories[0]} disclosure",
+                        filter_triggered=3,
+                        sbert_category_scores=category_scores,
+                    )
+                recheck_cats, _, _ = self._sbert_proximity(new_response)
+                if not recheck_cats:
+                    return SADResult(
+                        sad_detected=True,
+                        attribute_categories=categories,
+                        max_similarity=max_similarity,
+                        confidence=confidence,
+                        decision="reask",
+                        response=new_response,
+                        reasoning=f"Constrained reask resolved {categories[0]} disclosure",
+                        filter_triggered=3,
+                        sbert_category_scores=category_scores,
+                    )
+            except Exception:
+                pass
+
+        return SADResult(
+            sad_detected=True,
+            attribute_categories=categories,
+            max_similarity=max_similarity,
+            confidence=confidence,
+            decision="mask",
+            response=self._mask_sensitive(response, categories),
+            reasoning=reasoning + " (reask failed, masked)",
+            filter_triggered=3,
+            sbert_category_scores=category_scores,
+        )
+
+    # ── LLM reformulation: generalize sensitive specifics, keep the rest ──────
+
+    def _synthesize_response(self, response: str, categories: list[str]) -> str | None:
+        """
+        Asks Phi-3 to rewrite the response so the sensitive specifics flagged
+        in `categories` are generalized into non-identifying terms (e.g. "a
+        health condition" instead of a named diagnosis) while everything else
+        stays as-is. Returns None if the call fails or yields nothing usable
+        — callers fall back to sentence-level masking in that case.
+        """
+        categories_str = ", ".join(categories)
+        prompt = (
+            "Rewrite the response below so it no longer discloses specific, "
+            f"identifiable details related to: {categories_str}. "
+            "Generalize each sensitive detail into a broad, non-identifying term "
+            "(e.g. 'a health condition' instead of a named diagnosis or procedure, "
+            "'a personal belief' instead of a specific religion, "
+            "'a political affiliation' instead of a named party). "
+            "Keep every other fact in the response exactly as it is. "
+            "Do not add disclaimers, do not mention that anything was changed, "
+            "do not invent new information.\n\n"
+            f"Response to rewrite:\n{response}\n\n"
+            "Rewritten response (text only, no preamble):"
+        )
+        try:
+            import requests
+            resp = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={"model": self.phi3_model, "prompt": prompt, "stream": False},
+                timeout=120,
+            )
+            rewritten = resp.json().get("response", "").strip()
+            return rewritten or None
+        except Exception:
+            return None

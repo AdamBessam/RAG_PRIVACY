@@ -152,15 +152,15 @@ def extract_doc_items(dataset) -> list[dict]:
         if not text:
             continue
 
-        spans = sample.get("spans", []) or []
+        entity_mentions = sample.get("entity_mentions", []) or []
         entity_hints = []
-        for span in spans:
-            ent_type = span.get("entity_type", "")
+        for ent in entity_mentions:
+            ent_type = ent.get("entity_type", "")
             if ent_type not in SENSITIVE_ENTITY_TYPES:
                 continue
-            start = span.get("start_offset", 0)
-            end   = span.get("end_offset", 0)
-            entity_text = text[start:end] if start < end <= len(text) else ""
+            start = ent.get("start_offset", 0)
+            end   = ent.get("end_offset", 0)
+            entity_text = ent.get("span_text", text[start:end] if start < end <= len(text) else "")
             if entity_text:
                 entity_hints.append(f"{entity_text} ({ent_type})")
 

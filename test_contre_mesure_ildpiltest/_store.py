@@ -2,12 +2,12 @@
 ChromaStore isolé pour le benchmark ildpil test split.
 Pointe sur test_contre_mesure_ildpiltest/chroma_db/ — indépendant du chroma_db racine.
 """
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ModuleNotFoundError:
+    pass
 
 import json
 import sys
