@@ -495,16 +495,10 @@ class CPBBootstrapV4:
         prompt = (
             f"Generate 3 to 5 short realistic sentences (1-2 sentences each) that describe "
             f"a person's {label} attribute in a {domain or 'legal'} document context. "
-            "Cover DIFFERENT ways this attribute can appear in a document — not only its "
-            "most obvious form, but also the related situations, events and consequences that "
-            "reveal it (for a medical attribute: an illness but also an operation, a treatment, "
-            "a disability or the resulting medical costs; for a belief: holding it but also an "
-            "act or expression of it). Vary the phrasing across sentences. "
             "Do not use real names. "
             f"{avoid_clause}"
             "Respond in valid JSON only.\n"
-            'Example: {"phrases": ["The individual has a chronic condition.", '
-            '"He incurred extra costs after an operation.", "She disclosed her faith."]}'
+            'Example: {"phrases": ["The individual has a chronic condition.", "She disclosed her faith."]}'
         )
         try:
             # temperature=0 rend Llama déterministe : sans varier le seed, une
