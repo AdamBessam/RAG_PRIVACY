@@ -1,22 +1,30 @@
 """
-run_evaluation_openai.py — Variante "stack OpenAI" du harness Zhang et al.
+run_evaluation_openai_v2.py — Variante "stack OpenAI" du harness Zhang et al.
+avec la CONTRE-MESURE v4 (CPBNaiveRAGV4).
 
-Même pipeline que evaluation_zhang/run_evaluation.py (CPB v3, mêmes 300
-requêtes d'attaque, mêmes métriques) mais avec :
-  - Embedding   : text-embedding-3-small (OpenAI) au lieu de all-MiniLM-L6-v2 (local)
-  - Génération  : gpt-4o-mini (OpenAI) au lieu de llama3.1:8b (Ollama local)
+Identique à run_evaluation_openai.py (mêmes 300 requêtes, mêmes métriques,
+mêmes juges GPT-4o, mêmes réponses gold) mais :
+  - Countermeasure : CPB v4 (countermeasure_v4/) au lieu de CPB v3.
 
-doc_index.json, attack_queries.json et reference_responses.json sont partagés
-avec le run Llama (data/zhang_eval/) car ils ne dépendent pas du LLM/embedding
-testé (mêmes docs, mêmes questions, mêmes réponses gold). Les fichiers propres
-à cette variante (réponses CPB, contextes, scores AE/PI/utility) sont écrits
-dans data/zhang_eval_openai/ pour ne pas écraser le run Llama et permettre la
-comparaison des deux runs.
+Stack inchangée par rapport au run v3 OpenAI :
+  - Embedding  : text-embedding-3-small (OpenAI)
+  - Génération : gpt-4o-mini (OpenAI)
+  - Évaluation : gpt-4o (juges AE / PI / RAGAS)
+
+Données partagées (indépendantes du LLM/embedding/contre-mesure) réutilisées
+telles quelles depuis data/zhang_eval/ : doc_index, attack_queries,
+reference_responses, claims DB (PI). L'INDEX Chroma OpenAI est aussi partagé
+avec le run v3 (même embedding → même espace vectoriel) : on réutilise la
+collection zhang_eval_corpus_openai sans ré-embedder.
+
+Les fichiers propres à ce run (réponses CPB v4, contextes, scores) sont écrits
+dans data/zhang_eval_openai_v2/ pour ne pas écraser le run v3 et permettre la
+comparaison v3 vs v4.
 
 Usage:
-  python run_evaluation_openai.py [--skip-generation]
+  python run_evaluation_openai_v2.py [--skip-generation]
     --skip-generation  : réutilise les réponses déjà sauvegardées dans
-                          data/zhang_eval_openai/responses.json
+                          data/zhang_eval_openai_v2/responses.json
 """
 import argparse
 import csv
@@ -28,8 +36,13 @@ import mlflow
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "evaluation_zhang"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from config import MLFLOW_TRACKING_URI, OPENAI_EMBEDDING_MODEL
+
+# Réutilise le ChromaStore OpenAI du run v3 : même embedding (text-embedding-3-small),
+# même collection persistée (zhang_eval_corpus_openai) → aucun ré-embedding.
+from run_evaluation_openai import OpenAIZhangChromaStore
 
 # ── Published results (Zhang et al. Table 2) — fill in manually ───────────────
 ZHANG_TABLE_2 = {
@@ -41,9 +54,8 @@ ZHANG_TABLE_2 = {
     "AR":    None,   # TODO
 }
 
-SHARED_DATA_DIR   = Path(__file__).parent.parent / "data" / "zhang_eval"          # doc_index, attack_queries, reference_responses (partagés avec le run Llama)
-DATA_DIR          = Path(__file__).parent.parent / "data" / "zhang_eval_openai"   # responses, contexts, scores (propres à cette variante)
-CHROMA_OPENAI_DIR = Path(__file__).parent.parent / "data" / "chroma_zhang_openai"
+SHARED_DATA_DIR = Path(__file__).parent.parent / "data" / "zhang_eval"             # doc_index, attack_queries, reference_responses (partagés)
+DATA_DIR        = Path(__file__).parent.parent / "data" / "zhang_eval_openai_v2"   # responses, contexts, scores (propres à ce run v4)
 
 RESPONSES_PATH = DATA_DIR / "responses.json"
 CONTEXTS_PATH  = DATA_DIR / "contexts.json"
@@ -51,164 +63,33 @@ RESULTS_PATH   = DATA_DIR / "results.json"
 CSV_PATH       = DATA_DIR / "results_per_query.csv"
 EXPERIMENT_NAME = "zhang_evaluation"
 
-COLLECTION_NAME = "zhang_eval_corpus_openai"
-CHUNK_SIZE      = 500
-CHUNK_OVERLAP   = 50
 
+# ── CPB v4 inference (gpt-4o-mini) ────────────────────────────────────────────
 
-# ── ChromaStore wrapper (text-embedding-3-small) ──────────────────────────────
-
-class OpenAIZhangChromaStore:
+def run_cpb_v4(doc_index: dict, attacks: list[dict]) -> tuple[list[str], list[list[str]]]:
     """
-    Variante de ZhangChromaStore (evaluation_zhang/run_evaluation.py) avec
-    text-embedding-3-small (OpenAI) au lieu de all-MiniLM-L6-v2 (local).
-    Construit sa propre collection ChromaDB : espace vectoriel différent
-    (1536-dim vs 384-dim), incompatible avec zhang_eval_corpus.
-    """
-
-    def __init__(self, doc_index: dict):
-        import chromadb
-        from chromadb.config import Settings
-
-        from openai_embedder import OpenAIEmbedder
-
-        self._embedder = OpenAIEmbedder()
-        CHROMA_OPENAI_DIR.mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(
-            path=str(CHROMA_OPENAI_DIR),
-            settings=Settings(anonymized_telemetry=False),
-        )
-
-        try:
-            collection = client.get_collection(COLLECTION_NAME)
-            if collection.count() == 0:
-                raise ValueError("empty collection")
-        except Exception:
-            collection = self._build_index(client, doc_index)
-
-        self.collection = collection
-        print(f"OpenAIZhangChromaStore ready: {self.collection.count()} chunks "
-              f"(model={OPENAI_EMBEDDING_MODEL})")
-
-    def _build_index(self, client, doc_index: dict):
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-        try:
-            client.delete_collection(COLLECTION_NAME)
-        except Exception:
-            pass
-        collection = client.create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP,
-        )
-
-        ids, texts, metadatas = [], [], []
-        for doc_id, doc_data in doc_index.items():
-            text = doc_data.get("text", "")
-            if not text.strip():
-                continue
-            for j, chunk in enumerate(splitter.split_text(text)):
-                ids.append(f"{doc_id}_chunk_{j:04d}")
-                texts.append(chunk)
-                metadatas.append({
-                    "source_doc_id": doc_id,
-                    "chunk_index":   j,
-                    "doc_id":        doc_id,
-                    "n_pii":         0,
-                    "pii_entities":  "[]",
-                })
-
-        print(f"Embedding {len(texts)} chunks with {OPENAI_EMBEDDING_MODEL}...")
-        embeddings = self._embedder.embed_texts(texts).tolist()
-
-        insert_batch = 100
-        for start in range(0, len(ids), insert_batch):
-            collection.add(
-                ids=ids[start : start + insert_batch],
-                embeddings=embeddings[start : start + insert_batch],
-                documents=texts[start : start + insert_batch],
-                metadatas=metadatas[start : start + insert_batch],
-            )
-
-        print(f"Indexed {collection.count()} chunks into '{COLLECTION_NAME}' "
-              f"({self._embedder.total_tokens} embedding tokens, "
-              f"${self._embedder.total_cost_usd:.4f})")
-        return collection
-
-    def query(self, query_text: str, top_k: int = 5) -> list[dict]:
-        query_emb = self._embedder.embed_single(query_text).tolist()
-        n_results = min(top_k * 3, self.collection.count())
-
-        results = self.collection.query(
-            query_embeddings=[query_emb],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"],
-        )
-
-        chunks = []
-        seen_doc_ids: set[str] = set()
-
-        for j in range(len(results["ids"][0])):
-            meta = results["metadatas"][0][j]
-            doc_id = meta.get("source_doc_id", results["ids"][0][j])
-
-            if doc_id in seen_doc_ids:
-                continue
-            seen_doc_ids.add(doc_id)
-
-            chunks.append({
-                "chunk_id":         results["ids"][0][j],
-                "text":             results["documents"][0][j],
-                "similarity_score": 1.0 - results["distances"][0][j],
-                "doc_id":           doc_id,
-                "n_pii":            0,
-                "pii_entities":     [],
-            })
-
-            if len(chunks) >= top_k:
-                break
-
-        return chunks
-
-    def get(self, limit: int = 50, include: list | None = None) -> dict:
-        return self.collection.get(limit=limit, include=include or ["documents"])
-
-    def count(self) -> int:
-        return self.collection.count()
-
-
-# ── CPB v3 inference (gpt-4o-mini) ────────────────────────────────────────────
-
-def run_cpb_v3(doc_index: dict, attacks: list[dict]) -> tuple[list[str], list[list[str]]]:
-    """
-    Instantiates CPB v3 with gpt-4o-mini and text-embedding-3-small retrieval,
+    Instantiates CPB v4 with gpt-4o-mini and text-embedding-3-small retrieval,
     runs it on all attack queries.
     Returns (responses, contexts_per_query).
     """
-    from countermeasure_v3.cpb_naive_rag_v3 import CPBNaiveRAGV3
+    from countermeasure_v4.cpb_naive_rag_v4 import CPBNaiveRAGV4
     from llms.gpt4o_mini_llm import GPT4oMiniLLM
     from rag.naive_rag import NaiveRAG
 
     store = OpenAIZhangChromaStore(doc_index)
     llm = GPT4oMiniLLM()
     naive_rag = NaiveRAG(store=store, llm=llm)
-    cpb = CPBNaiveRAGV3(naive_rag=naive_rag)
+    cpb = CPBNaiveRAGV4(naive_rag=naive_rag)
 
     responses: list[str] = []
     contexts_per_query: list[list[str]] = []
 
     for i, attack in enumerate(attacks):
-        print(f"  CPB v3 [{i + 1}/{len(attacks)}] {attack['doc_id']}...", end="\r")
+        print(f"  CPB v4 [{i + 1}/{len(attacks)}] {attack['doc_id']}...", end="\r")
         result = cpb.run(attack["query"])
         responses.append(result["response"])
-        # CR mesure la qualité du retrieval → on évalue les chunks BRUTS récupérés,
-        # pas les safe_chunks masqués (le masquage PII ne change pas quels docs sont
-        # récupérés, seulement leur contenu ; l'évaluer masqué mélangerait qualité de
-        # retrieval et dégâts du masquage).
+        # CR mesure la qualité du retrieval → chunks BRUTS récupérés (pas les
+        # safe_chunks masqués) : le masquage ne change pas quels docs sont récupérés.
         chunk_texts = [c.get("text", "") for c in result.get("raw_chunks", [])]
         contexts_per_query.append(chunk_texts)
 
@@ -226,8 +107,8 @@ def load_or_run_cpb(doc_index: dict, attacks: list[dict], skip_generation: bool)
         print(f"{len(responses)} responses loaded from cache.")
         return responses, contexts_per_query
 
-    print("Running CPB v3 (gpt-4o-mini + text-embedding-3-small)...")
-    responses, contexts_per_query = run_cpb_v3(doc_index, attacks)
+    print("Running CPB v4 (gpt-4o-mini + text-embedding-3-small)...")
+    responses, contexts_per_query = run_cpb_v4(doc_index, attacks)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
@@ -246,9 +127,9 @@ def print_results_table(cpb_metrics: dict) -> None:
     directions = {"LO_F1": "↓", "AE": "↑", "PI": "↓", "CR": "↑", "SS": "↑", "AR": "↑"}
 
     print("\n" + "=" * 70)
-    print("  RESULTS — CPB v3 (gpt-4o-mini + text-embedding-3-small)  vs  Zhang et al. Table 2")
+    print("  RESULTS — CPB v4 (gpt-4o-mini + text-embedding-3-small)  vs  Zhang et al. Table 2")
     print("=" * 70)
-    print(f"  {'Metric':<10} {'Dir':>4} {'CPB v3':>10} {'Zhang':>12} {'Delta':>10}")
+    print(f"  {'Metric':<10} {'Dir':>4} {'CPB v4':>10} {'Zhang':>12} {'Delta':>10}")
     print("-" * 70)
     for m in order:
         our = cpb_metrics.get(m)
@@ -265,9 +146,9 @@ def print_results_table(cpb_metrics: dict) -> None:
 
 def main(skip_generation: bool = False):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print("=== Zhang et al. Evaluation Harness — CPB v3 (OpenAI stack) ===\n")
+    print("=== Zhang et al. Evaluation Harness — CPB v4 (OpenAI stack) ===\n")
 
-    # 1. Load shared data (identique au run Llama, indépendant du LLM/embedding)
+    # 1. Load shared data (identique au run v3, indépendant du LLM/embedding/countermeasure)
     print("1. Loading shared data (doc_index, attack_queries)...")
     with open(SHARED_DATA_DIR / "doc_index.json", encoding="utf-8") as f:
         doc_index = json.load(f)
@@ -277,8 +158,8 @@ def main(skip_generation: bool = False):
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-    with mlflow.start_run(run_name="cpb_v3_gpt4o_mini_openai_embed"):
-        mlflow.log_param("system", "cpb_v3_openai_stack")
+    with mlflow.start_run(run_name="cpb_v4_gpt4o_mini_openai_embed"):
+        mlflow.log_param("system", "cpb_v4_openai_stack")
         mlflow.log_param("llm_generation", "gpt-4o-mini")
         mlflow.log_param("embedding_model", OPENAI_EMBEDDING_MODEL)
         mlflow.log_param("llm_evaluation", "gpt-4o")
@@ -286,7 +167,7 @@ def main(skip_generation: bool = False):
         mlflow.log_param("n_queries", len(attacks))
 
         # 2. Generate responses
-        print("2. Generating CPB v3 responses...")
+        print("2. Generating CPB v4 responses...")
         responses, contexts_per_query = load_or_run_cpb(doc_index, attacks, skip_generation)
         mlflow.log_param("n_responses", len(responses))
         print()
@@ -327,7 +208,7 @@ def main(skip_generation: bool = False):
                 pi_scores = json.load(f)
         else:
             # build_claims_db réutilise le cache existant (claims_built.flag) :
-            # la claims DB ne dépend que de doc_index, pas du LLM/embedding testé.
+            # la claims DB ne dépend que de doc_index, pas du LLM/embedding/countermeasure.
             pi_metric.build_claims_db(doc_index)
             pi_scores = pi_metric.compute_pi_batch(responses, attacks, verbose=True)
             with open(pi_cache_path, "w", encoding="utf-8") as f:
@@ -396,7 +277,7 @@ def main(skip_generation: bool = False):
             "AR":    utility["AR"],
         }
         all_results = {
-            "system":      "cpb_v3_openai_stack",
+            "system":      "cpb_v4_openai_stack",
             "llm":         "gpt-4o-mini",
             "embedding":   OPENAI_EMBEDDING_MODEL,
             "n_instances": len(attacks),
@@ -421,7 +302,7 @@ def main(skip_generation: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Zhang et al. evaluation harness for CPB v3 — OpenAI stack "
+        description="Zhang et al. evaluation harness for CPB v4 — OpenAI stack "
                      "(gpt-4o-mini generation + text-embedding-3-small retrieval)"
     )
     parser.add_argument(

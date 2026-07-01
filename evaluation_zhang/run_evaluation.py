@@ -130,7 +130,11 @@ def run_cpb_v3(attacks: list[dict]) -> tuple[list[str], list[list[str]]]:
         print(f"  CPB v3 [{i + 1}/{len(attacks)}] {attack['doc_id']}...", end="\r")
         result = cpb.run(attack["query"])
         responses.append(result["response"])
-        chunk_texts = [c.get("text", "") for c in result.get("chunks", [])]
+        # CR mesure la qualité du retrieval → on évalue les chunks BRUTS récupérés,
+        # pas les safe_chunks masqués (le masquage PII ne change pas quels docs sont
+        # récupérés, seulement leur contenu ; l'évaluer masqué mélangerait qualité de
+        # retrieval et dégâts du masquage).
+        chunk_texts = [c.get("text", "") for c in result.get("raw_chunks", [])]
         contexts_per_query.append(chunk_texts)
 
     print()
