@@ -1,7 +1,9 @@
 """
 metric_utility.py — Utility metrics CR, SS, AR via RAGAS with GPT-4o evaluator.
 
-  CR  Context Relevancy  : are retrieved chunks relevant to the query?        ↑
+  CR  Context Recall     : share of the gold answer's claims present in the
+                           retrieved chunks (RAGAS context_recall, matches
+                           Zhang et al. Table 2 "Context Recall")             ↑
   SS  Semantic Similarity: how close is the response to the gold reference?   ↑
   AR  Answer Relevancy   : does the response address the query?               ↑
 
@@ -99,7 +101,7 @@ def compute_utility(
         from ragas import evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import answer_relevancy, answer_similarity, context_precision
+        from ragas.metrics import answer_relevancy, answer_similarity, context_recall
         from ragas.metrics.base import MetricWithEmbeddings
     except ImportError as e:
         raise ImportError(
@@ -123,7 +125,7 @@ def compute_utility(
         OpenAIEmbeddings(model=OPENAI_EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
     )
 
-    metrics = [context_precision, answer_similarity, answer_relevancy]
+    metrics = [context_recall, answer_similarity, answer_relevancy]
     for m in metrics:
         m.llm = llm
         if isinstance(m, MetricWithEmbeddings):
@@ -132,7 +134,7 @@ def compute_utility(
     result = evaluate(dataset, metrics=metrics)
 
     return {
-        "CR": float(result.get("context_precision", 0.0)),
+        "CR": float(result.get("context_recall", 0.0)),
         "SS": float(result.get("answer_similarity", 0.0)),
         "AR": float(result.get("answer_relevancy", 0.0)),
     }
