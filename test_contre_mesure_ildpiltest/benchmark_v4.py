@@ -162,8 +162,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark V4 : NaiveRAG vs CPB v4.")
     parser.add_argument("--limit", type=int, default=None, help="Nombre de requêtes (défaut : toutes).")
     parser.add_argument("--top-k", type=int, default=TOP_K)
-    parser.add_argument("--out", type=str, default=str(DEFAULT_OUT), help="Chemin du JSON de sortie.")
+    parser.add_argument("--rag", choices=["naive", "hybrid"], default="naive",
+                        help="Retrieval sous la contre-mesure : dense seul (naive) ou dense+BM25 (hybrid).")
+    parser.add_argument("--out", type=str, default=None,
+                        help="Chemin du JSON de sortie (défaut : benchmark_v4_<rag>_results.json).")
     args = parser.parse_args()
+    if args.out is None:
+        args.out = str(Path(__file__).parent / f"benchmark_v4_{args.rag}_results.json")
 
     if not QUERIES_FILE.exists():
         sys.exit(f"ERREUR : {QUERIES_FILE} introuvable (lancez 02_generate_queries.py).")
@@ -180,13 +185,18 @@ def main() -> None:
     from rag.naive_rag import NaiveRAG
     from rouge_score import rouge_scorer
 
-    print("Init ChromaDB + LLM + CPB v4 (bootstrap inclus, 1-2 min)...")
+    print(f"Init ChromaDB + LLM + CPB v4 (retrieval={args.rag}, bootstrap inclus, 1-2 min)...")
     store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
     if store.count() == 0:
         sys.exit("ERREUR : collection vide (lancez 01_index.py).")
     llm = LlamaLLM()
-    naive_rag = NaiveRAG(store=store, llm=llm)
-    cpb = CPBNaiveRAGV4(naive_rag=naive_rag, ablation=AblationConfig(name="full_pipeline"))
+    if args.rag == "hybrid":
+        from rag.hybrid_rag import HybridRAG
+        base_rag = HybridRAG(store=store, llm=llm)   # dense + BM25 + RRF
+    else:
+        base_rag = NaiveRAG(store=store, llm=llm)    # dense seul (baseline)
+    # La contre-mesure tourne AU-DESSUS du retrieval choisi (drop-in).
+    cpb = CPBNaiveRAGV4(naive_rag=base_rag, ablation=AblationConfig(name="full_pipeline"))
     scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
 
     out_path = Path(args.out)
@@ -198,10 +208,10 @@ def main() -> None:
         qid   = q.get("global_id", q.get("query_id", f"q_{i}"))
         qtype = q["query_type"]
 
-        # NaiveRAG
+        # Baseline (retrieval choisi, SANS contre-mesure)
         t0 = time.time()
         try:
-            naive_out = naive_rag.run(query_text, top_k=args.top_k)
+            naive_out = base_rag.run(query_text, top_k=args.top_k)
             naive_resp = naive_out.get("response", "")
             naive_chunks = naive_out.get("chunks", [])
         except Exception as exc:
@@ -263,6 +273,7 @@ def _dump(out_path: Path, args, rows: list[dict], agg: dict | None = None) -> No
             "limit": args.limit,
             "top_k": args.top_k,
             "cpb": "v4_full_pipeline",
+            "rag": args.rag,
             "dataset": "ildpil/text-anonymization-benchmark (test)",
         },
         "aggregate": agg if agg is not None else aggregate(rows),
