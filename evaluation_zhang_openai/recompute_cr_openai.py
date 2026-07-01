@@ -33,14 +33,30 @@ ROOT = Path(__file__).parent.parent
 SHARED_DATA_DIR = ROOT / "data" / "zhang_eval"
 
 
-def build_raw_contexts(doc_index: dict, attacks: list[dict]) -> list[list[str]]:
-    """Re-récupère les chunks BRUTS par requête (embedding requêtes uniquement)."""
+def build_raw_contexts(doc_index: dict, attacks: list[dict], top_k: int = TOP_K) -> list[list[str]]:
+    """
+    Re-récupère les chunks BRUTS par requête, SANS déduplication par document.
+
+    store.query() ne garde qu'un chunk par doc_id (bon pour la diversité privacy,
+    mais plafonne context_recall : le doc source n'apparaît qu'en 1 chunk sur ~6).
+    Ici on interroge directement la collection Chroma → top_k chunks par
+    similarité pure, donc plusieurs chunks du doc source → couverture réelle du
+    retrieval, comparable au Naive RAG de Zhang et al. (Table 2).
+    """
     store = OpenAIZhangChromaStore(doc_index)
+    collection = store.collection
+    embedder = store._embedder
     contexts: list[list[str]] = []
     for i, attack in enumerate(attacks):
         print(f"  retrieve [{i + 1}/{len(attacks)}] {attack['doc_id']}...", end="\r")
-        chunks = store.query(attack["query"], top_k=TOP_K)
-        contexts.append([c.get("text", "") for c in chunks])
+        q_emb = embedder.embed_single(attack["query"]).tolist()
+        n_results = min(top_k, collection.count())
+        res = collection.query(
+            query_embeddings=[q_emb],
+            n_results=n_results,
+            include=["documents"],
+        )
+        contexts.append(res["documents"][0])  # top_k chunks, non dédupliqués
     print()
     return contexts
 
@@ -69,12 +85,12 @@ def compute_context_recall(attacks: list[dict], contexts: list[list[str]], refer
     return float(result.get("context_recall", 0.0))
 
 
-def main(use_v3: bool = False) -> None:
+def main(use_v3: bool = False, top_k: int = TOP_K) -> None:
     data_dir = ROOT / "data" / ("zhang_eval_openai" if use_v3 else "zhang_eval_openai_v2")
     utility_path = data_dir / "utility_scores.json"
     run_label = "v3" if use_v3 else "v4"
 
-    print(f"=== Recompute Context Recall — run {run_label} ({data_dir.name}) ===\n")
+    print(f"=== Recompute Context Recall — run {run_label} ({data_dir.name}), top_k={top_k} (non-dedup) ===\n")
 
     # 1. Données partagées
     with open(SHARED_DATA_DIR / "doc_index.json", encoding="utf-8") as f:
@@ -87,9 +103,9 @@ def main(use_v3: bool = False) -> None:
     references = generate_reference_responses(attacks, doc_index)
     assert len(references) == len(attacks), "references/attacks length mismatch"
 
-    # 3. Chunks bruts (re-retrieval, embedding requêtes seulement)
-    print("2. Re-retrieval des chunks bruts (raw_chunks)...")
-    contexts = build_raw_contexts(doc_index, attacks)
+    # 3. Chunks bruts NON dédupliqués (re-retrieval, embedding requêtes seulement)
+    print(f"2. Re-retrieval top-{top_k} chunks bruts, SANS dédup par doc...")
+    contexts = build_raw_contexts(doc_index, attacks, top_k=top_k)
 
     # 4. Context Recall (juge GPT-4o, context_recall seulement)
     print("3. RAGAS context_recall (GPT-4o)...")
@@ -118,5 +134,6 @@ def main(use_v3: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Recalcule Context Recall (CR) sur un run existant, CR-only.")
     parser.add_argument("--v3", action="store_true", help="Cible le run v3 (data/zhang_eval_openai/) au lieu de v4")
+    parser.add_argument("--top-k", type=int, default=TOP_K, help=f"Nb de chunks non dédupliqués à récupérer (défaut {TOP_K})")
     args = parser.parse_args()
-    main(use_v3=args.v3)
+    main(use_v3=args.v3, top_k=args.top_k)
