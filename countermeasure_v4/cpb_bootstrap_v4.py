@@ -15,8 +15,11 @@ Steps:
   0a  Discover PII types from ChromaDB metadata (Path A) or Presidio on sample (Path B)
   0b  Infer corpus domain via nvidia/domain-classifier (fallback: Llama zero-shot)
   0c  Generate domain-specific sensitive categories + Presidio hints via Llama
-  0d  Enrich each category with real anonymized phrases, topping up with Llama-generated
-      synthetic phrases (looping over several calls if needed) until 15 phrases are reached
+  0d  Seed each category with Llama-generated synthetic phrases (which name the
+      attribute), then ground it with the corpus sentences semantically nearest
+      to those seeds (anonymized). Selection is by meaning, not by Presidio
+      entity type — the latter made unrelated categories collapse onto the same
+      generic phrases and thus identical centroids.
   0e  Build L2-normalized SBERT centroids (all-MiniLM-L6-v2, local)
 """
 
@@ -41,6 +44,17 @@ logger = logging.getLogger(__name__)
 NVIDIA_MODEL_ID = "nvidia/domain-classifier"
 NVIDIA_SAMPLE_SIZE = 30
 NVIDIA_MAX_CHARS = 2000  # le tokenizer DeBERTa tronque à 512 tokens de toute façon
+
+# Step 0d : un exemplaire réel du corpus n'est retenu comme graine de centroïde
+# que s'il est au moins aussi proche (cosinus) de l'ancre synthétique de sa
+# catégorie. Empêche une catégorie quasi absente du corpus (ex. religion dans un
+# corpus juridique procédural) d'aspirer du boilerplate générique : elle retombe
+# alors sur ses graines synthétiques, qui restent spécifiques à la catégorie au
+# lieu de s'effondrer sur un centroïde « [PERSON] c/ [LOCATION] » partagé.
+SEMANTIC_RELEVANCE_FLOOR = 0.40
+D0_SENTENCE_POOL_MAX = 500   # borne le coût d'embedding du pool de phrases corpus
+D0_SYNTHETIC_SEEDS = 8       # graines synthétiques (ancre sémantique) par catégorie
+D0_REAL_SEEDS = 7            # exemplaires réels max ajoutés par catégorie
 
 
 @dataclass
@@ -325,7 +339,7 @@ class CPBBootstrapV4:
             logger.warning(f"[CPBBootstrap 0c] Category generation failed ({exc}), returning empty categories")
         return [], {}
 
-    # ── Step 0d : Anchor phrase enrichment — identique v3 ───────────────────
+    # ── Step 0d : Anchor phrase enrichment — semantic selection (v4) ────────
 
     def _step_0d(
         self,
@@ -350,14 +364,32 @@ class CPBBootstrapV4:
                 if len(sent) > 20:
                     all_sentences.append(sent)
 
+        # Anonymize the candidate pool once (masks names/locations; attribute
+        # words like "diabetes"/"faith" are not named entities so the sensitive
+        # signal survives). These phrases are persisted in the bootstrap
+        # artifact — raw names must not leak. Without Presidio we skip real
+        # exemplars entirely rather than persist raw corpus text.
+        anon_sentences = (
+            self._anonymize_pool(all_sentences, analyzer, anonymizer)
+            if anonymizer is not None else []
+        )
+        embedder = self._get_embedder()
+        corpus_embs = embedder.embed_texts(anon_sentences) if anon_sentences else None
+
         taxonomy: dict[str, list[str]] = {}
         for category in categories:
+            # Category-specific synthetic seeds NAME the attribute, so they anchor
+            # the centroid on the right concept instead of on generic legal
+            # scaffolding shared across categories (the bug that made REL/SEX
+            # centroids identical: selection by Presidio entity type pulled the
+            # same PERSON/LOCATION sentences for every category).
+            synthetic = self._fill_with_synthetic([], category, domain, target=D0_SYNTHETIC_SEEDS)
             real = (
-                self._collect_real_phrases(category, all_sentences, analyzer, anonymizer, category_hints)
-                if analyzer is not None else []
+                self._select_relevant_sentences(synthetic, anon_sentences, corpus_embs, embedder)
+                if corpus_embs is not None and synthetic else []
             )
-            phrases = list(real)
-            if len(phrases) < 15:
+            phrases = list(dict.fromkeys(synthetic + real))  # dedupe, keep order
+            if len(phrases) < D0_SYNTHETIC_SEEDS:
                 phrases = self._fill_with_synthetic(phrases, category, domain, target=15)
             taxonomy[category] = phrases[:15] if phrases else self._fallback_phrases(category)
 
@@ -392,34 +424,58 @@ class CPBBootstrapV4:
                         break
         return phrases
 
-    def _collect_real_phrases(
+    def _anonymize_pool(
         self,
-        category: str,
         sentences: list[str],
         analyzer,
         anonymizer,
-        category_hints: dict[str, set[str]],
-        max_phrases: int = 15,
     ) -> list[str]:
-        relevant_types = category_hints.get(category, None)
-        phrases: list[str] = []
-
-        for sent in sentences:
-            if len(phrases) >= max_phrases:
-                break
+        """Anonymize (mask named entities) up to D0_SENTENCE_POOL_MAX corpus
+        sentences. This pool is the shared candidate set from which every
+        category picks its semantically-nearest exemplars. Attribute words
+        survive (they are not named entities), so the category signal is kept
+        while raw names/locations are masked before persistence."""
+        pool: list[str] = []
+        for sent in sentences[:D0_SENTENCE_POOL_MAX]:
             try:
                 text = sent[:500]
                 results = analyzer.analyze(text=text, language="en")
-                if not results:
-                    continue
-                if relevant_types and not any(r.entity_type in relevant_types for r in results):
-                    continue
-                anon = anonymizer.anonymize(text=text, analyzer_results=results)
-                phrases.append(anon.text)
+                if results:
+                    text = anonymizer.anonymize(text=text, analyzer_results=results).text
+                pool.append(text)
             except Exception:
                 continue
+        return pool
 
-        return phrases
+    def _select_relevant_sentences(
+        self,
+        anchor_phrases: list[str],
+        anon_sentences: list[str],
+        corpus_embs,
+        embedder,
+        k: int = D0_REAL_SEEDS,
+    ) -> list[str]:
+        """Return the k anonymized corpus sentences most cosine-similar to the
+        category's synthetic anchor (mean of its synthetic seeds), keeping only
+        those above SEMANTIC_RELEVANCE_FLOOR. Replaces the old entity-type
+        filter that made all categories collapse onto the same generic phrases.
+        A category absent from the corpus keeps nothing here and stays on its
+        (still distinct) synthetic seeds."""
+        anchor_embs = embedder.embed_texts(anchor_phrases)   # (M, 384), L2-normalized
+        anchor = anchor_embs.mean(axis=0)
+        norm = np.linalg.norm(anchor)
+        if norm < 1e-9:
+            return []
+        anchor = anchor / norm
+        sims = corpus_embs @ anchor                          # (N,), cosine (both normalized)
+        selected: list[str] = []
+        for idx in np.argsort(sims)[::-1]:
+            if sims[idx] < SEMANTIC_RELEVANCE_FLOOR:
+                break
+            selected.append(anon_sentences[idx])
+            if len(selected) >= k:
+                break
+        return selected
 
     def _generate_synthetic_phrases(
         self,
