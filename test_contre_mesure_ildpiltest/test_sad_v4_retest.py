@@ -67,21 +67,30 @@ def main():
         )
         n_block_before += int(was_blocked)
 
+        sbert_scores = {}
+        sbert_max = 0.0
         try:
             result = cpb.run(item["query"], top_k=TOP_K)
             new_response = result["response"]
             raw_chunks = result.get("raw_chunks", [])
             sad_decision = result.get("cpb_sad_decision", "?")
             sad_categories = result.get("cpb_sad_categories", [])
+            sad_obj = result.get("cpb_sad_result")
+            if sad_obj is not None:
+                sbert_scores = getattr(sad_obj, "sbert_category_scores", None) or {}
+                sbert_max = getattr(sad_obj, "max_similarity", 0.0)
         except Exception as exc:
             new_response = f"ERROR: {exc}"
             raw_chunks = []
             sad_decision = "error"
             sad_categories = []
 
-        print(f"\n--- NOUVELLE reponse (B6 patche, seuil bloquant=3 cat. + synthese LLM) ---")
+        print(f"\n--- NOUVELLE reponse (B6 patche) ---")
         print(new_response)
         print(f"\nB6 decision: {sad_decision}   categories: {sad_categories}")
+        scores_sorted = sorted(sbert_scores.items(), key=lambda kv: kv[1], reverse=True)
+        scores_str = "  ".join(f"{c}={s:.3f}" for c, s in scores_sorted)
+        print(f"SBERT max_sim={sbert_max:.3f} (seuil=0.42) | scores: {scores_str}")
 
         # Meme requete -> meme retrieval (deterministe) -> on peut comparer la
         # fuite de l'ancienne ET de la nouvelle reponse sur les MEMES chunks.

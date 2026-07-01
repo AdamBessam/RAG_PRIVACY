@@ -67,12 +67,18 @@ def main():
         print(f"\n--- Reponse ORIGINALE (NaiveRAG, sans contre-mesure) ---")
         print(naive_response)
 
+        sbert_scores = {}
+        sbert_max = 0.0
         try:
             cpb_result = cpb.run(item["query"], top_k=TOP_K)
             cpb_response = cpb_result["response"]
             sad_decision = cpb_result.get("cpb_sad_decision", "?")
             sad_categories = cpb_result.get("cpb_sad_categories", [])
             guard_decision = cpb_result.get("cpb_response_guard_decision", "?")
+            sad_obj = cpb_result.get("cpb_sad_result")
+            if sad_obj is not None:
+                sbert_scores = getattr(sad_obj, "sbert_category_scores", None) or {}
+                sbert_max = getattr(sad_obj, "max_similarity", 0.0)
         except Exception as exc:
             cpb_response = f"ERROR: {exc}"
             sad_decision = "error"
@@ -82,6 +88,11 @@ def main():
         print(f"\n--- Reponse APRES SYSTEME (CPB v4, B6 patche) ---")
         print(cpb_response)
         print(f"\nB6 decision: {sad_decision}   categories: {sad_categories}   B7 (response guard): {guard_decision}")
+        # Scores SBERT par categorie (tries decroissant) — pour voir a quel
+        # score les faux positifs se declenchent (seuil actuel = 0.42).
+        scores_sorted = sorted(sbert_scores.items(), key=lambda kv: kv[1], reverse=True)
+        scores_str = "  ".join(f"{c}={s:.3f}" for c, s in scores_sorted)
+        print(f"SBERT max_sim={sbert_max:.3f} (seuil=0.42) | scores: {scores_str}")
 
         if sad_decision == "block":
             n_block += 1
@@ -103,6 +114,8 @@ def main():
             "cpb_sad_decision": sad_decision,
             "cpb_sad_categories": sad_categories,
             "cpb_response_guard_decision": guard_decision,
+            "sbert_max_sim": round(float(sbert_max), 4),
+            "sbert_category_scores": {c: round(float(s), 4) for c, s in sbert_scores.items()},
         })
 
     sep("RESUME")
