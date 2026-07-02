@@ -66,12 +66,16 @@ class OpenAIZhangChromaStore:
     (1536-dim vs 384-dim), incompatible avec zhang_eval_corpus.
     """
 
-    def __init__(self, doc_index: dict):
+    def __init__(self, doc_index: dict, dedup: bool = True):
         import chromadb
         from chromadb.config import Settings
 
         from openai_embedder import OpenAIEmbedder
 
+        # dedup=True (défaut) : 1 chunk par document (cadre attaque/PI de Zhang).
+        # dedup=False : top_k chunks bruts, plusieurs du même doc autorisés →
+        # meilleure couverture du doc source (CR/SS/AR), plus de contexte au LLM.
+        self.dedup = dedup
         self._embedder = OpenAIEmbedder()
         CHROMA_OPENAI_DIR.mkdir(parents=True, exist_ok=True)
         client = chromadb.PersistentClient(
@@ -88,7 +92,7 @@ class OpenAIZhangChromaStore:
 
         self.collection = collection
         print(f"OpenAIZhangChromaStore ready: {self.collection.count()} chunks "
-              f"(model={OPENAI_EMBEDDING_MODEL})")
+              f"(model={OPENAI_EMBEDDING_MODEL}, dedup={self.dedup})")
 
     def _build_index(self, client, doc_index: dict):
         from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -156,9 +160,11 @@ class OpenAIZhangChromaStore:
             meta = results["metadatas"][0][j]
             doc_id = meta.get("source_doc_id", results["ids"][0][j])
 
-            if doc_id in seen_doc_ids:
-                continue
-            seen_doc_ids.add(doc_id)
+            # dedup=False : on autorise plusieurs chunks du même document.
+            if self.dedup:
+                if doc_id in seen_doc_ids:
+                    continue
+                seen_doc_ids.add(doc_id)
 
             chunks.append({
                 "chunk_id":         results["ids"][0][j],
