@@ -43,11 +43,14 @@ class HybridRAG:
         llm: BaseLLM,
         candidate_k: int = 20,   # nb de candidats pris à CHAQUE retriever avant fusion
         rrf_k: int = 60,         # constante RRF (standard = 60)
+        dedup: bool = True,      # True : 1 chunk par doc (fusion par doc_id).
+                                 # False : plusieurs chunks/doc (fusion par chunk_id).
     ):
         self.store = store
         self.llm = llm
         self.candidate_k = candidate_k
         self.rrf_k = rrf_k
+        self.dedup = dedup
         self._build_bm25()
 
     # ── BM25 index (construit une fois sur tous les chunks) ────────────────────
@@ -103,13 +106,17 @@ class HybridRAG:
     # ── Fusion RRF (par doc_id, comme NaiveRAG renvoie des docs uniques) ────────
 
     def _rrf_fuse(self, dense: list[dict], sparse: list[dict], top_k: int) -> list[dict]:
-        acc: dict = {}   # doc_id -> {"score":float, "chunk":dict}
+        # dedup=True  : fusion par doc_id   → 1 chunk par document.
+        # dedup=False : fusion par chunk_id → plusieurs chunks du même document
+        #               survivent (le doc source apparaît en plusieurs morceaux).
+        key_field = "doc_id" if self.dedup else "chunk_id"
+        acc: dict = {}   # key -> {"score":float, "chunk":dict}
         for ranked in (dense, sparse):
             for rank, ch in enumerate(ranked):
-                did = ch.get("doc_id")
-                if did is None:
+                key = ch.get(key_field)
+                if key is None:
                     continue
-                entry = acc.setdefault(did, {"score": 0.0, "chunk": ch})
+                entry = acc.setdefault(key, {"score": 0.0, "chunk": ch})
                 entry["score"] += 1.0 / (self.rrf_k + rank + 1)
                 # Préférer le chunk dense (il porte le cosinus) comme représentant.
                 if ch.get("similarity_score") is not None and entry["chunk"].get("similarity_score") is None:
