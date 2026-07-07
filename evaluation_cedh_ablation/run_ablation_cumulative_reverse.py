@@ -6,8 +6,11 @@ inward") ablation for CPB v4 on the CEDH corpus
 Same idea and SAME LOCAL METRICS as this folder's run_ablation.py (leave-one-out)
 — NOTHING here calls an external API / OpenAI key:
   - metrics/pii_leakage.py       : ground-truth PII leakage rate
-  - metrics/response_quality.py  : exact match, ROUGE-L, BERTScore F1,
-                                    answer relevancy, weighted quality score
+  - metrics/response_quality.py  : ROUGE-L, BERTScore F1, answer relevancy,
+                                    weighted quality score (EM/exact-match is
+                                    dropped from the report: entity_hint is the
+                                    generic fallback for all queries, so EM is
+                                    always 0 on this dataset)
 The only difference vs run_ablation.py is WHICH ablation configs are scored:
 instead of leave-one-out, each variant disables one MORE layer than the
 previous, in REVERSE pipeline order, starting from the output-side guard B7 and
@@ -96,14 +99,13 @@ SHARED_SAMPLE_PATH = Path(__file__).parent.parent / "data" / "cedh_eval_ablation
 LOCAL_SAMPLE_PATH = OUT_ROOT / "sampled_queries.json"                                   # fallback cache (never writes to data/) — recomputed in main()
 EXPERIMENT_NAME = "cedh_evaluation_ablation_cumulative_reverse"                         # suffixed with retrieval mode in main()
 
-METRIC_ORDER = ["PII", "QS", "AR", "RL", "BF1", "EM"]
+METRIC_ORDER = ["PII", "QS", "AR", "RL", "BF1"]
 METRIC_NAMES = {
     "PII": "PII leakage rate",
     "QS":  "Quality score",
     "AR":  "Answer relevancy",
     "RL":  "ROUGE-L",
     "BF1": "BERTScore F1",
-    "EM":  "Exact match",
 }
 
 ENTITY_HINT_RE = re.compile(r"^(.*) \([A-Z_]+\)$")
@@ -369,7 +371,7 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
         with open(pii_path, "w", encoding="utf-8") as f:
             json.dump(pii_dicts, f, ensure_ascii=False, indent=2)
 
-    print(f"  [{ablation.name}] [Quality] exact match / ROUGE-L / BERTScore / answer relevancy...")
+    print(f"  [{ablation.name}] [Quality] ROUGE-L / BERTScore / answer relevancy...")
     from metrics.response_quality import compute_response_quality
     quality_path = variant_dir / "quality_results.json"
     if quality_path.exists():
@@ -403,7 +405,6 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
         "AR":  sum(d["answer_relevancy"] for d in quality_dicts) / n,
         "RL":  sum(d["rouge_l"] for d in quality_dicts) / n,
         "BF1": sum(d["bert_score_f1"] for d in quality_dicts) / n,
-        "EM":  sum(d["exact_match"] for d in quality_dicts) / n,
     }
 
     print(f"  [{ablation.name}] " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items()))
@@ -412,9 +413,9 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
     csv_path = variant_dir / "results_per_query.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "global_id", "query_id", "query_type", "query", "target_entity", "response",
+            "global_id", "query_id", "query_type", "query", "response",
             "pii_leaked", "pii_total", "pii_leakage_rate",
-            "exact_match", "rouge_l", "bert_f1", "answer_relevancy", "quality_score",
+            "rouge_l", "bert_f1", "answer_relevancy", "quality_score",
         ])
         writer.writeheader()
         for q, resp, pii_d, q_d in zip(queries, responses, pii_dicts, quality_dicts):
@@ -423,12 +424,10 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
                 "query_id":         q.get("query_id", ""),
                 "query_type":       q.get("query_type", ""),
                 "query":            get_query_text(q)[:300],
-                "target_entity":    parse_target_entity(q.get("entity_hint", "")) or "",
                 "response":         resp,
                 "pii_leaked":       pii_d["n_pii_leaked"],
                 "pii_total":        pii_d["n_pii_total"],
                 "pii_leakage_rate": round(pii_d["leakage_rate"], 4),
-                "exact_match":      round(q_d["exact_match"], 4),
                 "rouge_l":          round(q_d["rouge_l"], 4),
                 "bert_f1":          round(q_d["bert_score_f1"], 4),
                 "answer_relevancy": round(q_d["answer_relevancy"], 4),
