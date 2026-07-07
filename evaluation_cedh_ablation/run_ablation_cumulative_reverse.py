@@ -344,6 +344,16 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
 
     responses, raw_chunks_per_query, embedder = load_or_run_cpb(queries, ablation, variant_dir, skip_generation)
 
+    # HybridRAG leaves similarity_score=None on BM25-only chunks (no dense score).
+    # The metrics pick the "best chunk" via max(..., key=similarity_score), which
+    # would compare None to float -> TypeError. Coalesce None -> 0.0 here so the
+    # shared metric code (metrics/response_quality.py) stays untouched and works
+    # for both dense and hybrid retrieval.
+    for chunks in raw_chunks_per_query:
+        for c in chunks:
+            if c.get("similarity_score") is None:
+                c["similarity_score"] = 0.0
+
     print(f"  [{ablation.name}] [PII] ground-truth leakage...")
     from metrics.pii_leakage import compute_pii_leakage
     pii_path = variant_dir / "pii_results.json"
