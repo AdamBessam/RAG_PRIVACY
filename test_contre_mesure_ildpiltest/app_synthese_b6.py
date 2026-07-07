@@ -1,5 +1,12 @@
 """
-app_synthese_b6.py — Interface Streamlit d'inspection de B6 (SAD detector) de CPB v4.
+app_synthese_b6.py — Interface Streamlit d'inspection de B6 (SAD detector) de CPB v5.
+
+CPB v5 = CPB v4 + masquage sélectif domain-aware de B4, piloté par le curseur
+`mask_min_weight` (défaut 0.5) : une entité n'est masquée que si le poids de son
+type >= mask_min_weight, ou si son type est jugé sensible par B0 pour ce domaine.
+Bas = masque plus (0.0 ≈ tout) ; haut = masque moins. Le curseur est réglable
+dans la barre latérale. Le reste (B0/B1/B2/B3/B6/B7 + cascade de synthèse B6)
+est hérité de v4 sans changement.
 
 Pose UNE question et montre, étape par étape, ce que fait la contre-mesure sur la
 réponse — en particulier le AVANT → APRÈS quand B6 décide de **synthétiser**
@@ -13,7 +20,7 @@ réponse — en particulier le AVANT → APRÈS quand B6 décide de **synthétis
 
 N'appelle AUCUNE API externe : génération = Llama local (Ollama), B6 = Phi-3 local.
 Ne modifie pas le code cœur : orchestre seulement les sous-étapes publiques de
-CPBNaiveRAGV4 (retrieve -> generate -> sad_detector.detect -> response_guard.guard)
+CPBNaiveRAGV5 (retrieve -> generate -> sad_detector.detect -> response_guard.guard)
 pour capturer la réponse brute (avant B6) ET la réponse B6 (après).
 
 Lancement (sur la machine qui a la ChromaDB indexée + Ollama) :
@@ -63,12 +70,12 @@ EXAMPLES = [
 
 
 # ── Chargement système (une seule fois, mis en cache) ─────────────────────────
-@st.cache_resource(show_spinner="Chargement CPB v4 (B0 bootstrap + Llama, 1re fois seulement)…")
-def load_system(retrieval_mode: str):
+@st.cache_resource(show_spinner="Chargement CPB v5 (B0 bootstrap + Llama, 1re fois seulement)…")
+def load_system(retrieval_mode: str, mask_min_weight: float, use_domain_hints: bool):
     from test_contre_mesure_ildpiltest._store import IldpilTestStore
     from test_contre_mesure_ildpiltest.config import CHROMA_DIR, COLLECTION_NAME
     from llms.llama_llm import LlamaLLM
-    from countermeasure_v4.cpb_naive_rag_v4 import CPBNaiveRAGV4
+    from countermeasure_v5.cpb_naive_rag_v5 import CPBNaiveRAGV5
     from countermeasure_v4.cpb_ablation import AblationConfig
 
     store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
@@ -79,8 +86,15 @@ def load_system(retrieval_mode: str):
     else:
         from rag.naive_rag import NaiveRAG
         retriever = NaiveRAG(store=store, llm=llm)
-    # Full pipeline (toutes les couches actives) pour que B6 puisse synthétiser.
-    cpb = CPBNaiveRAGV4(naive_rag=retriever, ablation=AblationConfig(name="full_pipeline"))
+    # CPB v5 = v4 + masquage sélectif domain-aware sur les chunks (B4), piloté par
+    # mask_min_weight (bas = masque plus, haut = masque moins). Full pipeline pour
+    # que B6 puisse synthétiser.
+    cpb = CPBNaiveRAGV5(
+        naive_rag=retriever,
+        ablation=AblationConfig(name="full_pipeline"),
+        mask_min_weight=mask_min_weight,
+        use_domain_hints=use_domain_hints,
+    )
     return cpb
 
 
@@ -129,14 +143,25 @@ def inspect(cpb, query: str, top_k: int) -> dict:
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-st.title("🔎 CPB v4 — Inspecteur B6")
-st.caption("Voir le AVANT → APRÈS de la contre-mesure (synthèse / masquage / blocage) sur une question")
+st.title("🔎 CPB v5 — Inspecteur B6 (+ masquage sélectif B4)")
+st.caption("AVANT → APRÈS de la contre-mesure CPB v5 (synthèse / masquage / blocage) sur une question")
 
 with st.sidebar:
     st.header("Réglages")
     retrieval_mode = st.radio("Retrieval", ["hybrid", "dense"], index=0,
                               help="hybrid = dense ChromaDB + BM25 (RRF) ; dense = vecteur seul")
     top_k = st.slider("top_k (chunks récupérés)", 1, 10, TOP_K)
+    st.markdown("---")
+    st.subheader("CPB v5 — masquage sélectif (B4)")
+    mask_min_weight = st.slider(
+        "mask_min_weight", 0.0, 1.0, 0.5, 0.05,
+        help="Seuil de masquage par poids de type. BAS = masque PLUS (0.0 ≈ tout est masqué), "
+             "HAUT = masque MOINS (seuls les types les plus sensibles).",
+    )
+    use_domain_hints = st.checkbox(
+        "use_domain_hints (types sensibles du domaine, B0)", value=True,
+        help="Ajoute les types jugés sensibles par B0 pour ce corpus (domain-aware).",
+    )
     st.markdown("---")
     st.markdown("**Exemples** (cliquer pour remplir) :")
     for ex in EXAMPLES:
@@ -147,7 +172,9 @@ query = st.text_input("Ta question :", key="query", placeholder="What health iss
 go = st.button("▶️ Analyser", type="primary")
 
 if go and query.strip():
-    cpb = load_system(retrieval_mode)
+    cpb = load_system(retrieval_mode, mask_min_weight, use_domain_hints)
+    st.caption(f"⚙️ CPB v5 · mask_min_weight={cpb.mask_min_weight} · "
+               f"types sensibles du domaine (B0) : {sorted(cpb.domain_sensitive_types) or '(aucun)'}")
     with st.spinner("Génération Llama + analyse B6 (Phi-3)…"):
         res = inspect(cpb, query.strip(), top_k)
 
