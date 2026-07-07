@@ -162,6 +162,22 @@ def parse_target_entity(entity_hint: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def quality_score_no_em(d: dict) -> float:
+    """Recompute quality_score WITHOUT the exact-match term (EM is structurally
+    always 0 on this dataset). Mirrors metrics/response_quality.py's weighting
+    but drops the 0.10*EM component and renormalizes the remaining weights so
+    the score still spans [0, 1]:
+        BF1 > 0 : (0.40*AR + 0.30*BF1 + 0.20*RL) / 0.90
+        else    : (0.50*AR + 0.30*RL) / 0.80
+    """
+    ar  = d.get("answer_relevancy", 0.0)
+    bf1 = d.get("bert_score_f1", 0.0)
+    rl  = d.get("rouge_l", 0.0)
+    if bf1 > 0:
+        return (0.40 * ar + 0.30 * bf1 + 0.20 * rl) / 0.90
+    return (0.50 * ar + 0.30 * rl) / 0.80
+
+
 def get_query_text(q: dict) -> str:
     """95/1000 dgea-type entries in queries.json have a malformed "query"
     field -- gpt-4o-mini sometimes returned {"type": "...", "query": "..."}
@@ -393,6 +409,13 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
         quality_dicts = [asdict(r) for r in quality_results]
         with open(quality_path, "w", encoding="utf-8") as f:
             json.dump(quality_dicts, f, ensure_ascii=False, indent=2)
+
+    # Drop EM from the quality_score itself (not just from the report): overwrite
+    # each dict's quality_score in-memory with the EM-free, renormalized value so
+    # the aggregate QS, the CSV and results.json all use it. The
+    # quality_results.json cache keeps the library's raw values untouched.
+    for d in quality_dicts:
+        d["quality_score"] = quality_score_no_em(d)
 
     pii_leaked_total = sum(d["n_pii_leaked"] for d in pii_dicts)
     pii_total = sum(d["n_pii_total"] for d in pii_dicts)
