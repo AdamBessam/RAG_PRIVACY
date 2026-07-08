@@ -88,7 +88,8 @@ class CPBNaiveRAGV5Combo(CPBNaiveRAGV5):
             '["PERSON","LOCATION","DATE_TIME"], ["US_SSN"]]}'
         )
         try:
-            raw = self.llm.generate(prompt).response
+            raw = self._llama_json(prompt)
+            print(f"CPB v5 combo: réponse LLM brute = {raw[:400]!r}")
             parsed = self._parse_json(raw)
             allowed = set(_AVAILABLE_TYPES)
             combos: list[frozenset[str]] = []
@@ -111,6 +112,25 @@ class CPBNaiveRAGV5Combo(CPBNaiveRAGV5):
         except Exception as exc:
             print(f"CPB v5 combo: génération des combos échouée ({exc!r}) → fallback v5.")
         return []
+
+    def _llama_json(self, prompt: str) -> str:
+        """Appelle Llama en FORÇANT une sortie JSON (comme B0). Le LLM génère,
+        on ne fabrique rien nous-mêmes."""
+        client = getattr(self.llm, "client", None)
+        if client is not None:
+            resp = client.chat(
+                model=self.llm.name,
+                messages=[{"role": "user", "content": prompt}],
+                format="json",                       # ← force le JSON, clé du fix
+                options={"temperature": 0, "num_predict": 512},
+            )
+            if hasattr(resp, "message"):
+                return resp.message.content or ""
+            if isinstance(resp, dict):
+                return resp.get("message", {}).get("content", "")
+            return str(resp)
+        # LLM sans client ollama → sortie standard (parsing best-effort)
+        return self.llm.generate(prompt).response
 
     @staticmethod
     def _parse_json(raw: str) -> dict:
