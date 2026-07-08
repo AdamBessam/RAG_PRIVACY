@@ -49,7 +49,10 @@ from config import TOP_K
 from test_contre_mesure_ildpiltest.config import CHROMA_DIR, COLLECTION_NAME, QUERIES_FILE
 
 ROOT = Path(__file__).parent.parent
-OUT_PATH = ROOT / "data" / "cedh_metrics_by_query_type" / "results.json"
+OUT_DIR = ROOT / "data" / "cedh_metrics_by_query_type"
+OUT_PATH = OUT_DIR / "results.json"
+RESPONSES_PATH = OUT_DIR / "responses.json"
+BOOTSTRAP_PATH = OUT_DIR / "bootstrap_b0.json"
 
 ENTITY_HINT_RE = re.compile(r"^(.*) \([A-Z_]+\)$")
 METRIC_KEYS = ("PII", "QS", "AR", "RL", "EM")
@@ -106,20 +109,36 @@ def build_cpb(mask_min_weight: float, use_domain_hints: bool, use_llm_combos: bo
     )
 
 
-def score_group(cpb, queries: list[dict], embedder) -> dict:
-    """Génère + score un groupe de requêtes (un query_type)."""
+def _chunk_texts(chunks: list) -> list[str]:
+    """Texte de chaque chunk (masqué si dict CPB, sinon str brut)."""
+    out = []
+    for c in chunks or []:
+        if isinstance(c, dict):
+            out.append(c.get("text", ""))
+        else:
+            out.append(str(c))
+    return out
+
+
+def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, list[dict]]:
+    """Génère + score un groupe de requêtes (un query_type).
+    Renvoie (métriques agrégées, liste des enregistrements par requête)."""
     from metrics.pii_leakage import compute_pii_leakage
     from metrics.response_quality import compute_response_quality
 
     agg = {k: 0.0 for k in METRIC_KEYS}
+    records: list[dict] = []
     n = 0
     for i, q in enumerate(queries):
         qtext = get_query_text(q)
         print(f"      [{i + 1}/{len(queries)}] {q.get('global_id', q.get('query_id', ''))}...", end="\r")
+        masked_query, masked_context = qtext, []
         try:
             result = cpb.run(qtext, top_k=TOP_K)
             response = result["response"]
             raw_chunks = result.get("raw_chunks", [])
+            masked_query = result.get("cpb_masked_query", qtext)
+            masked_context = _chunk_texts(result.get("chunks", []))
         except Exception as exc:
             response, raw_chunks = f"ERROR: {exc}", []
 
@@ -129,14 +148,26 @@ def score_group(cpb, queries: list[dict], embedder) -> dict:
             target_entity=parse_target_entity(q), embedder=embedder,
             precomputed_bert_f1=0.0,   # BF1 désactivé → QS sur AR/RL/EM
         )
-        agg["PII"] += pii.leakage_rate
-        agg["QS"]  += rq.quality_score
-        agg["AR"]  += rq.answer_relevancy
-        agg["RL"]  += rq.rouge_l
-        agg["EM"]  += rq.exact_match
+        metrics = {
+            "PII": pii.leakage_rate, "QS": rq.quality_score,
+            "AR": rq.answer_relevancy, "RL": rq.rouge_l, "EM": rq.exact_match,
+        }
+        for k in METRIC_KEYS:
+            agg[k] += metrics[k]
+        records.append({
+            "global_id":      q.get("global_id", q.get("query_id", "")),
+            "query_type":     qtype,
+            "query":          qtext,
+            "target_entity":  parse_target_entity(q),
+            "masked_query":   masked_query,
+            "response":       response,
+            "masked_context": masked_context,   # ce que le LLM a réellement vu (après masquage)
+            "metrics":        metrics,
+        })
         n += 1
     print()
-    return {"n": n, **{k: (agg[k] / n if n else 0.0) for k in METRIC_KEYS}}
+    agg_out = {"n": n, **{k: (agg[k] / n if n else 0.0) for k in METRIC_KEYS}}
+    return agg_out, records
 
 
 def main():
@@ -172,11 +203,13 @@ def main():
 
     print("\n3. Scoring par type de question...\n")
     rows: dict[str, dict] = {}
+    all_records: list[dict] = []
     for qtype, queries in groups.items():
         if not queries:
             continue
         print(f"  -> query_type = {qtype}  (n={len(queries)})")
-        rows[qtype] = score_group(cpb, queries, embedder)
+        rows[qtype], recs = score_group(cpb, qtype, queries, embedder)
+        all_records.extend(recs)
 
     # ── Tableau comparatif par type ──────────────────────────────────────────
     print("\n" + "=" * 74)
@@ -198,17 +231,55 @@ def main():
               f"{glob['AR']:>8.4f} {glob['RL']:>8.4f} {glob['EM']:>8.4f}")
     print("=" * 74)
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # ── Décision B0 (bootstrap) : domaine + tout ce dont il est rempli ────────
+    br = cpb.bootstrap_result
+    bootstrap_dump = {
+        "domain":             getattr(br, "domain", None),
+        "domain_confidence":  getattr(br, "domain_confidence", None),
+        "domain_source":      getattr(br, "domain_source", None),
+        "used_fallback":      getattr(br, "used_fallback", None),
+        "categories":         getattr(br, "dynamic_categories", []),
+        "category_hints":     {k: sorted(v) for k, v in (getattr(br, "category_hints", {}) or {}).items()},
+        "taxonomy":           {k: list(v) for k, v in (getattr(br, "dynamic_taxonomy", {}) or {}).items()},
+        "learned_types":      sorted(getattr(br, "learned_types", set()) or set()),
+        "risky_combinations": [sorted(c) for c in getattr(cpb, "risky_combos", [])],
+    }
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
             "mask_min_weight": args.mask_min_weight,
             "llm_combos": use_llm_combos,
             "domain_hints": not args.no_domain_hints,
-            "risky_combinations": [sorted(c) for c in getattr(cpb, "risky_combos", [])],
+            "bootstrap_b0": bootstrap_dump,
             "by_query_type": rows,
         }, f, ensure_ascii=False, indent=2)
-    print(f"\nSauvegardé → {OUT_PATH}")
+
+    with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
+        json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
+
+    with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "per_type": args.per_type,
+            "llm_combos": use_llm_combos,
+            "bootstrap_b0": bootstrap_dump,
+            "responses": all_records,
+        }, f, ensure_ascii=False, indent=2)
+
+    print("\nSauvegardé :")
+    print(f"  métriques par type → {OUT_PATH}")
+    print(f"  décision B0        → {BOOTSTRAP_PATH}")
+    print(f"  réponses générées  → {RESPONSES_PATH}  ({len(all_records)} réponses)")
+
+    # Aperçu console de la décision B0
+    print("\n── Décision B0 ──")
+    print(f"  domaine={bootstrap_dump['domain']} "
+          f"(conf={bootstrap_dump['domain_confidence']}, source={bootstrap_dump['domain_source']}, "
+          f"fallback={bootstrap_dump['used_fallback']})")
+    print(f"  catégories={bootstrap_dump['categories']}")
+    print(f"  category_hints={bootstrap_dump['category_hints']}")
+    print(f"  combinaisons risquées={bootstrap_dump['risky_combinations']}")
 
 
 if __name__ == "__main__":
