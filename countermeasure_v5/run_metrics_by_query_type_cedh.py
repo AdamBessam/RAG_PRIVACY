@@ -7,6 +7,8 @@ But : ne PAS agréger toutes les requêtes ensemble, mais comparer les métrique
     normal · direct · injection · dgea · mia
 → on voit quel type de question réagit comment à la contre-mesure.
 
+Retrieval = HybridRAG (dense ChromaDB cosinus + BM25, fusion RRF) ; par défaut
+nodedup (plusieurs chunks par doc), --dedup pour 1 chunk/doc.
 Masquage = CPB v5 combo (masquage par COMBINAISONS ré-identifiantes générées par
 B0/Llama pour le domaine détecté ; on masque pour casser toute combinaison
 présente, on garde le reste ; identifiants forts toujours masqués).
@@ -91,18 +93,20 @@ def load_queries_by_type(per_type: int, seed: int) -> dict[str, list[dict]]:
     return out
 
 
-def build_cpb(mask_min_weight: float, use_domain_hints: bool, use_llm_combos: bool):
-    """Construit UNE fois la contre-mesure (un seul bootstrap B0)."""
+def build_cpb(mask_min_weight: float, use_domain_hints: bool, use_llm_combos: bool, dedup: bool):
+    """Construit UNE fois la contre-mesure (un seul bootstrap B0).
+    Retrieval = HybridRAG (dense ChromaDB + BM25, fusion RRF)."""
     from countermeasure_v5.cpb_naive_rag_v5_combo import CPBNaiveRAGV5Combo
     from llms.llama_llm import LlamaLLM
-    from rag.naive_rag import NaiveRAG
+    from rag.hybrid_rag import HybridRAG
     from test_contre_mesure_ildpiltest._store import IldpilTestStore
 
     store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
     llm = LlamaLLM()
-    naive_rag = NaiveRAG(store=store, llm=llm)
+    # HybridRAG : dense + BM25 + RRF. dedup=False → plusieurs chunks/doc (config hybrid_nodedup).
+    hybrid = HybridRAG(store=store, llm=llm, dedup=dedup)
     return CPBNaiveRAGV5Combo(
-        naive_rag=naive_rag,
+        naive_rag=hybrid,
         mask_min_weight=mask_min_weight,
         use_domain_hints=use_domain_hints,
         use_llm_combos=use_llm_combos,
@@ -181,6 +185,8 @@ def main():
                         help="Désactive le Signal 2 (category_hints de B0).")
     parser.add_argument("--no-llm-combos", action="store_true",
                         help="Désactive la génération LLM des combinaisons → fallback masquage v5.")
+    parser.add_argument("--dedup", action="store_true",
+                        help="HybridRAG : 1 chunk par doc. Par défaut nodedup (plusieurs chunks/doc).")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -194,11 +200,13 @@ def main():
     from embeddings.embedder import Embedder
     embedder = Embedder()
 
-    print("2. Bootstrap CPB v5 combo (un seul B0)...")
+    print(f"2. Bootstrap CPB v5 combo + HybridRAG "
+          f"({'dedup' if args.dedup else 'nodedup'})...")
     cpb = build_cpb(
         mask_min_weight=args.mask_min_weight,
         use_domain_hints=not args.no_domain_hints,
         use_llm_combos=use_llm_combos,
+        dedup=args.dedup,
     )
 
     print("\n3. Scoring par type de question...\n")
@@ -214,7 +222,8 @@ def main():
     # ── Tableau comparatif par type ──────────────────────────────────────────
     print("\n" + "=" * 74)
     print("  MÉTRIQUES PAR TYPE DE QUESTION  (PII ↓ = mieux, QS/AR/RL/EM ↑ = mieux)")
-    print(f"  llm_combos={'ON' if use_llm_combos else 'OFF (fallback v5)'}, "
+    print(f"  retrieval=HybridRAG ({'dedup' if args.dedup else 'nodedup'}), "
+          f"llm_combos={'ON' if use_llm_combos else 'OFF (fallback v5)'}, "
           f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}")
     print("=" * 74)
     print(f"  {'query_type':>11} {'n':>4} {'PII':>8} {'QS':>8} {'AR':>8} {'RL':>8} {'EM':>8}")
@@ -249,6 +258,7 @@ def main():
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
+            "retrieval": f"hybrid_{'dedup' if args.dedup else 'nodedup'}",
             "mask_min_weight": args.mask_min_weight,
             "llm_combos": use_llm_combos,
             "domain_hints": not args.no_domain_hints,
