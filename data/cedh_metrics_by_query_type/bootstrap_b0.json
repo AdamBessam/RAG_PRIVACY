@@ -1,0 +1,84 @@
+{
+  "domain": "law",
+  "domain_confidence": 1.0,
+  "domain_source": "llama_fallback",
+  "used_fallback": false,
+  "categories": [
+    "HEALTH_CONDITION",
+    "POLITICAL_OPINION",
+    "RELIGIOUS_BELIEF",
+    "SEXUAL_ORIENTATION",
+    "ETHNIC_ORIGIN"
+  ],
+  "category_hints": {
+    "HEALTH_CONDITION": [
+      "DISEASE"
+    ],
+    "POLITICAL_OPINION": [
+      "NRP",
+      "ORGANIZATION"
+    ],
+    "ETHNIC_ORIGIN": [
+      "NATIONALITY"
+    ]
+  },
+  "taxonomy": {
+    "HEALTH_CONDITION": [
+      "He suffers from a permanent disability.",
+      "Her medical records indicate a history of migraines.",
+      "The person has a pre-existing heart condition.",
+      "He is currently undergoing treatment for a neurological disorder.",
+      "Her medical history reveals a susceptibility to respiratory infections.",
+      "The person's health records show evidence of a degenerative joint disease.",
+      "He is living with a permanent mobility impairment.",
+      "Her medical history indicates a pattern of recurring sinusitis."
+    ],
+    "POLITICAL_OPINION": [
+      "He is an outspoken advocate for environmental protection.",
+      "Her views on taxation are generally considered conservative.",
+      "His stance on gun control is nuanced and context-dependent.",
+      "He holds strong libertarian views on economic policy.",
+      "Her opinions on social welfare programs are often at odds with the majority.",
+      "His stance on immigration reform is shaped by his personal experiences.",
+      "He believes that government intervention in economic matters is often counterproductive.",
+      "Her views on healthcare reform are influenced by her experiences as a caregiver."
+    ],
+    "RELIGIOUS_BELIEF": [
+      "He identifies as a devout follower of the Christian faith.",
+      "Her spiritual practices are rooted in Buddhism and meditation.",
+      "Their personal beliefs align with the principles of Islam.",
+      "They have expressed a desire to observe Jewish holidays and traditions.",
+      "Her spiritual practices are guided by the teachings of Hinduism.",
+      "He adheres to the principles of Sikhism and its sacred texts.",
+      "Their personal values are influenced by the tenets of Jainism.",
+      "Her spiritual practices reflect a deep connection to the teachings of Taoism."
+    ],
+    "SEXUAL_ORIENTATION": [
+      "The individual identifies as gay.",
+      "He is attracted to individuals of the same gender.",
+      "Her sexual orientation is lesbian.",
+      "He identifies as homosexual.",
+      "His attraction is limited to males.",
+      "Her preference is for female partners.",
+      "He expresses same-sex attraction.",
+      "His orientation is towards men."
+    ],
+    "ETHNIC_ORIGIN": [
+      "He identifies as of East Asian descent.",
+      "Her ancestry is predominantly Indigenous Australian.",
+      "Their cultural background is rooted in the Middle Eastern region.",
+      "Her family's heritage is tied to Southeast Asia.",
+      "He was born to parents of South Asian origin.",
+      "Their ancestral roots are in the Pacific Islands.",
+      "Her ethnicity is attributed to the Indian subcontinent.",
+      "He was born to parents of Filipino ancestry."
+    ]
+  },
+  "learned_types": [
+    "DATE_TIME",
+    "LOCATION",
+    "NRP",
+    "PERSON"
+  ],
+  "risky_combinations": []
+}
