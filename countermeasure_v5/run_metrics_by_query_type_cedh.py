@@ -124,6 +124,21 @@ def _chunk_texts(chunks: list) -> list[str]:
     return out
 
 
+def _sanitize_chunks(chunks: list) -> list[dict]:
+    """HybridRAG : les hits BM25 ont similarity_score=None → max() plante dans
+    compute_response_quality. On remplace None par le rrf_score (ou 0.0), sur une
+    COPIE, sans muter les chunks d'origine ni toucher au code métrique partagé."""
+    safe = []
+    for c in chunks or []:
+        if not isinstance(c, dict):
+            continue
+        cc = dict(c)
+        if cc.get("similarity_score") is None:
+            cc["similarity_score"] = float(cc.get("rrf_score") or 0.0)
+        safe.append(cc)
+    return safe
+
+
 def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, list[dict]]:
     """Génère + score un groupe de requêtes (un query_type).
     Renvoie (métriques agrégées, liste des enregistrements par requête)."""
@@ -146,9 +161,10 @@ def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, l
         except Exception as exc:
             response, raw_chunks = f"ERROR: {exc}", []
 
-        pii = compute_pii_leakage(response, raw_chunks, qtext)
+        safe_chunks = _sanitize_chunks(raw_chunks)
+        pii = compute_pii_leakage(response, safe_chunks, qtext)
         rq = compute_response_quality(
-            query=qtext, response=response, chunks=raw_chunks,
+            query=qtext, response=response, chunks=safe_chunks,
             target_entity=parse_target_entity(q), embedder=embedder,
             precomputed_bert_f1=0.0,   # BF1 désactivé → QS sur AR/RL/EM
         )
