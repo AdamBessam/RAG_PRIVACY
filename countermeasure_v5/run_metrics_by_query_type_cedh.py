@@ -308,6 +308,14 @@ def print_metrics_table(rows: dict, note: str = "") -> None:
     print("=" * 74)
 
 
+def print_banner(title: str) -> None:
+    """Grande bannière pour séparer nettement chaque variante à l'écran."""
+    line = "#" * 78
+    print("\n" + line)
+    print(f"#  {title}")
+    print(line)
+
+
 def print_compare_table(rows_on: dict, rows_off: dict) -> None:
     """Comparaison COMBO vs ANONYMISE-TOUT, par type. Δ = combo − mask_all.
     ΔQS>0 = les combos préservent l'utilité vs tout masquer ;
@@ -419,18 +427,24 @@ def main():
                   "masquage sélectif v5 (pas de vraie combinaison). La comparaison vaut "
                   "alors 'v5 sélectif' vs 'anonymise-tout'.")
 
-        print("\n3a. Variante COMBO (combinaisons LLM actives)...")
+        print_banner("VARIANTE 1/2 — COMBO (combinaisons LLM actives)")
         cpb.mask_all = False
         cpb.risky_combos = generated_combos
         rows_on, recs_on = score_all(cpb, groups, embedder, ds)
 
-        print("\n3b. Variante ANONYMISE-TOUT (sans combinaison, on masque tout)...")
+        print_banner("VARIANTE 2/2 — ANONYMISE-TOUT (baseline, on masque tout)")
         cpb.mask_all = True            # baseline : aucune entité épargnée
         rows_off, recs_off = score_all(cpb, groups, embedder, ds)
         cpb.mask_all = False
 
+        # ── Métriques de chaque variante, séparées par une bannière ───────────
+        print_banner("RÉSULTATS — VARIANTE 1/2 : COMBO")
         print_metrics_table(rows_on,  note=f"COMBO — {args.dataset}, retrieval={retr}")
+
+        print_banner("RÉSULTATS — VARIANTE 2/2 : ANONYMISE-TOUT")
         print_metrics_table(rows_off, note=f"ANONYMISE-TOUT — {args.dataset}, retrieval={retr}")
+
+        print_banner("SYNTHÈSE — VALEUR AJOUTÉE (COMBO vs ANONYMISE-TOUT)")
         print_compare_table(rows_on, rows_off)
 
         with open(paths["compare"], "w", encoding="utf-8") as f:
