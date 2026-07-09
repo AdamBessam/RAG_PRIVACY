@@ -230,11 +230,12 @@ def print_metrics_table(rows: dict, note: str = "") -> None:
 
 
 def print_compare_table(rows_on: dict, rows_off: dict) -> None:
-    """Comparaison COMBO ON vs OFF, par type. Δ = ON − OFF.
-    ΔPII<0 = combos réduisent la fuite (mieux) ; ΔQS>0 = combos gardent l'utilité."""
+    """Comparaison COMBO vs ANONYMISE-TOUT, par type. Δ = combo − mask_all.
+    ΔQS>0 = les combos préservent l'utilité vs tout masquer ;
+    ΔPII>0 = les combos laissent (un peu) plus fuiter que tout masquer."""
     print("\n" + "=" * 78)
-    print("  VALEUR AJOUTÉE DES COMBINAISONS  —  COMBO(on) vs v5(off)   Δ = on − off")
-    print("  ΔPII < 0 → combos réduisent la fuite (mieux) | ΔQS > 0 → utilité préservée")
+    print("  VALEUR AJOUTÉE  —  COMBO vs ANONYMISE-TOUT   Δ = combo − mask_all")
+    print("  ΔQS > 0 → combos gardent l'utilité | ΔPII > 0 → combos laissent + fuiter")
     print("=" * 78)
     print(f"  {'query_type':>11} | {'PII_on':>7} {'PII_off':>7} {'ΔPII':>7} "
           f"| {'QS_on':>7} {'QS_off':>7} {'ΔQS':>7}")
@@ -283,7 +284,9 @@ def main():
     parser.add_argument("--dedup", action="store_true",
                         help="HybridRAG : 1 chunk par doc. Par défaut nodedup (plusieurs chunks/doc).")
     parser.add_argument("--compare", action="store_true",
-                        help="Compare COMBO(on) vs v5(off) sur les MÊMES questions/B0 → valeur ajoutée.")
+                        help="Compare COMBO vs ANONYMISE-TOUT sur les MÊMES questions/B0 → valeur ajoutée.")
+    parser.add_argument("--mask-all", action="store_true",
+                        help="Run seul baseline : anonymise TOUT (aucune entité épargnée), sorties *_maskall.json.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -325,19 +328,22 @@ def main():
     if args.compare:
         # ── Comparaison : MÊMES questions/B0/retrieval, combos ON puis OFF ─────
         if not generated_combos:
-            print("\n⚠  Aucune combinaison générée → COMBO(on) == v5(off) : "
-                  "comparaison dégénérée (deltas nuls).")
+            print("\n⚠  Aucune combinaison générée → la variante 'COMBO' retombe sur le "
+                  "masquage sélectif v5 (pas de vraie combinaison). La comparaison vaut "
+                  "alors 'v5 sélectif' vs 'anonymise-tout'.")
 
-        print("\n3a. Variante COMBO ON (combinaisons LLM actives)...")
+        print("\n3a. Variante COMBO (combinaisons LLM actives)...")
+        cpb.mask_all = False
         cpb.risky_combos = generated_combos
         rows_on, recs_on = score_all(cpb, groups, embedder)
 
-        print("\n3b. Variante v5 OFF (sans l'effet de la combinaison LLM)...")
-        cpb.risky_combos = []          # retire UNIQUEMENT la logique de combinaison
+        print("\n3b. Variante ANONYMISE-TOUT (sans combinaison, on masque tout)...")
+        cpb.mask_all = True            # baseline : aucune entité épargnée
         rows_off, recs_off = score_all(cpb, groups, embedder)
+        cpb.mask_all = False
 
-        print_metrics_table(rows_on,  note=f"COMBO ON — retrieval={retr}")
-        print_metrics_table(rows_off, note=f"v5 OFF (sans combinaison) — retrieval={retr}")
+        print_metrics_table(rows_on,  note=f"COMBO — retrieval={retr}")
+        print_metrics_table(rows_off, note=f"ANONYMISE-TOUT — retrieval={retr}")
         print_compare_table(rows_on, rows_off)
 
         with open(COMPARE_PATH, "w", encoding="utf-8") as f:
@@ -347,15 +353,15 @@ def main():
                 "mask_min_weight": args.mask_min_weight,
                 "domain_hints": not args.no_domain_hints,
                 "bootstrap_b0": bootstrap_dump,
-                "combo_on": {"by_query_type": rows_on,  "global": weighted_global(rows_on)},
-                "v5_off":   {"by_query_type": rows_off, "global": weighted_global(rows_off)},
+                "combo":     {"by_query_type": rows_on,  "global": weighted_global(rows_on)},
+                "mask_all":  {"by_query_type": rows_off, "global": weighted_global(rows_off)},
             }, f, ensure_ascii=False, indent=2)
         with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
             json.dump({
                 "per_type": args.per_type,
                 "bootstrap_b0": bootstrap_dump,
-                "responses_combo_on": recs_on,
-                "responses_v5_off":   recs_off,
+                "responses_combo":    recs_on,
+                "responses_mask_all": recs_off,
             }, f, ensure_ascii=False, indent=2)
         with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
             json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
@@ -366,39 +372,45 @@ def main():
         print(f"  décision B0        → {BOOTSTRAP_PATH}")
         return
 
-    # ── Mode simple : une seule variante ──────────────────────────────────────
-    print("\n3. Scoring par type de question...\n")
+    # ── Mode simple : une seule variante (combo, ou anonymise-tout) ───────────
+    cpb.mask_all = args.mask_all
+    mode = "anonymise-tout" if args.mask_all else (
+        "combo" if generated_combos else "v5-sélectif (combos vides)")
+    print(f"\n3. Scoring par type de question — variante: {mode}\n")
     rows, all_records = score_all(cpb, groups, embedder)
-    print_metrics_table(
-        rows,
-        note=f"retrieval={retr}, llm_combos={'ON' if use_llm_combos else 'OFF (fallback v5)'}, "
-             f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}",
-    )
+    print_metrics_table(rows, note=f"variante={mode}, retrieval={retr}, "
+                                    f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}")
 
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
+    # Sorties dédiées pour le baseline afin de ne pas écraser le run combo.
+    suffix = "_maskall" if args.mask_all else ""
+    out_path = OUT_DIR / f"results{suffix}.json"
+    resp_path = OUT_DIR / f"responses{suffix}.json"
+
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
+            "variante": mode,
             "retrieval": retr,
             "mask_min_weight": args.mask_min_weight,
-            "llm_combos": use_llm_combos,
+            "llm_combos": use_llm_combos and not args.mask_all,
             "domain_hints": not args.no_domain_hints,
             "bootstrap_b0": bootstrap_dump,
             "by_query_type": rows,
         }, f, ensure_ascii=False, indent=2)
     with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
         json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
-    with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
+    with open(resp_path, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
-            "llm_combos": use_llm_combos,
+            "variante": mode,
             "bootstrap_b0": bootstrap_dump,
             "responses": all_records,
         }, f, ensure_ascii=False, indent=2)
 
     print("\nSauvegardé :")
-    print(f"  métriques par type → {OUT_PATH}")
+    print(f"  métriques par type → {out_path}")
     print(f"  décision B0        → {BOOTSTRAP_PATH}")
-    print(f"  réponses générées  → {RESPONSES_PATH}  ({len(all_records)} réponses)")
+    print(f"  réponses générées  → {resp_path}  ({len(all_records)} réponses)")
 
 
 if __name__ == "__main__":

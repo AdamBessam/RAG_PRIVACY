@@ -57,6 +57,9 @@ class CPBNaiveRAGV5Combo(CPBNaiveRAGV5):
     ):
         super().__init__(naive_rag, **kwargs)  # exécute B0, remplit bootstrap_result
         self.always_mask_min_weight = always_mask_min_weight
+        # mask_all=True → baseline "anonymise TOUT" (aucune entité épargnée), pour
+        # comparer l'apport des combinaisons. Bascule à chaud entre deux passes.
+        self.mask_all = False
         self.risky_combos: list[frozenset[str]] = (
             self._discover_risky_combinations() if use_llm_combos else []
         )
@@ -150,6 +153,9 @@ class CPBNaiveRAGV5Combo(CPBNaiveRAGV5):
         # Ablation B4 off → mask-all baseline v4.
         if not self.ablation.b4_pii_anonymizer:
             return super(CPBNaiveRAGV5, self)._anonymize_chunk(chunk, pii_result)
+        # Baseline "anonymise TOUT" : aucune entité épargnée (skip vide).
+        if self.mask_all:
+            return self.pii_anonymizer.anonymize_chunk(chunk, pii_result, skip_types=set())
         # Pas de combos (LLM off/échec) → comportement v5 standard.
         if not self.risky_combos:
             return super()._anonymize_chunk(chunk, pii_result)
