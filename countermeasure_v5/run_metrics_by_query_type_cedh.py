@@ -1,26 +1,32 @@
 """
-run_metrics_by_query_type_cedh.py — Métriques CPB v5 (contextuel) VENTILÉES PAR
-TYPE DE QUESTION sur CEDH (ildpil/text-anonymization-benchmark, split test).
+run_metrics_by_query_type_cedh.py — Métriques CPB v5 (combo) VENTILÉES PAR TYPE DE
+QUESTION, MULTI-DATASET (--dataset cedh|financial).
 
 But : ne PAS agréger toutes les requêtes ensemble, mais comparer les métriques
-(PII / QS / AR / RL / EM) SÉPARÉMENT pour chaque `query_type` du corpus :
-    normal · direct · injection · dgea · mia
-→ on voit quel type de question réagit comment à la contre-mesure.
+(PII / QS / AR / RL / EM) SÉPARÉMENT pour chaque `query_type` du corpus
+(normal · direct/ikea · injection · dgea · mia) → on voit quel type de question
+réagit comment à la contre-mesure.
+
+Datasets (les DEUX sont annotés ; la métrique PII s'adapte) :
+  - cedh      : ildpil/text-anonymization-benchmark (split test). PII = entités
+                SENSIBLES (sensitivity ildpil) via compute_pii_leakage.
+  - financial : benchmark_financial. PII = TOUTES les PII annotées des chunks
+                (ground-truth), exclusion de celles déjà dans la question.
 
 Retrieval = HybridRAG (dense ChromaDB cosinus + BM25, fusion RRF) ; par défaut
-nodedup (plusieurs chunks par doc), --dedup pour 1 chunk/doc.
-Masquage = CPB v5 combo (masquage par COMBINAISONS ré-identifiantes générées par
-B0/Llama pour le domaine détecté ; on masque pour casser toute combinaison
-présente, on garde le reste ; identifiants forts toujours masqués).
+nodedup, --dedup pour 1 chunk/doc.
+Masquage = CPB v5 combo (COMBINAISONS ré-identifiantes générées par B0/Llama pour
+le domaine détecté ; on masque pour casser toute combinaison présente ;
+identifiants forts toujours masqués). --mask-all = baseline anonymise-tout,
+--compare = combo vs anonymise-tout sur les mêmes questions.
 
 100 % LOCAL : génération Llama locale + métriques locales → AUCUN token OpenAI.
-Un SEUL bootstrap B0 (un seul jeu de combinaisons) pour tout le run.
+Un SEUL bootstrap B0 pour tout le run.
 
 Usage (depuis la racine du repo) :
-  python countermeasure_v5/run_metrics_by_query_type_cedh.py
-  python countermeasure_v5/run_metrics_by_query_type_cedh.py --per-type 30
-  python countermeasure_v5/run_metrics_by_query_type_cedh.py --no-llm-combos   # fallback v5
-  python countermeasure_v5/run_metrics_by_query_type_cedh.py --no-domain-hints
+  python countermeasure_v5/run_metrics_by_query_type_cedh.py --per-type 100 --compare
+  python countermeasure_v5/run_metrics_by_query_type_cedh.py --dataset financial --per-type 100 --compare
+  python countermeasure_v5/run_metrics_by_query_type_cedh.py --dataset financial --mask-all
 """
 from __future__ import annotations
 
@@ -47,28 +53,100 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import TOP_K
-from test_contre_mesure_ildpiltest.config import CHROMA_DIR, COLLECTION_NAME, QUERIES_FILE
-
 ROOT = Path(__file__).parent.parent
-OUT_DIR = ROOT / "data" / "cedh_metrics_by_query_type"
-OUT_PATH = OUT_DIR / "results.json"
-RESPONSES_PATH = OUT_DIR / "responses.json"
-BOOTSTRAP_PATH = OUT_DIR / "bootstrap_b0.json"
-COMPARE_PATH = OUT_DIR / "compare_combo_vs_v5.json"
 
 ENTITY_HINT_RE = re.compile(r"^(.*) \([A-Z_]+\)$")
 METRIC_KEYS = ("PII", "QS", "AR", "RL", "EM")
 
+# Registre des datasets : config + store + métrique PII adaptée + dossier de sortie.
+DATASETS = {
+    "cedh": {
+        "config_module": "test_contre_mesure_ildpiltest.config",
+        "store_module":  "test_contre_mesure_ildpiltest._store",
+        "store_class":   "IldpilTestStore",
+        "out_subdir":    "cedh_metrics_by_query_type",
+        "pii_mode":      "cedh",        # PII sensibles (sensitivity ildpil)
+    },
+    "financial": {
+        "config_module": "benchmark_financial.config",
+        "store_module":  "benchmark_financial._store",
+        "store_class":   "FinancialStore",
+        "out_subdir":    "financial_metrics_by_query_type",
+        "pii_mode":      "groundtruth", # toutes les PII annotées (pas de sensitivity)
+    },
+}
+
+
+def load_dataset(name: str) -> dict:
+    """Charge dynamiquement config + store + paramètres du dataset choisi."""
+    import importlib
+    if name not in DATASETS:
+        raise SystemExit(f"Dataset inconnu '{name}'. Choix : {list(DATASETS)}")
+    spec = DATASETS[name]
+    cfg = importlib.import_module(spec["config_module"])
+    store_cls = getattr(importlib.import_module(spec["store_module"]), spec["store_class"])
+    out_dir = ROOT / "data" / spec["out_subdir"]
+    return {
+        "name":         name,
+        "chroma_dir":   cfg.CHROMA_DIR,
+        "collection":   cfg.COLLECTION_NAME,
+        "queries_file": cfg.QUERIES_FILE,
+        "top_k":        getattr(cfg, "TOP_K", 5),
+        "store_cls":    store_cls,
+        "pii_mode":     spec["pii_mode"],
+        "out_dir":      out_dir,
+        "paths": {
+            "results":   out_dir / "results.json",
+            "responses": out_dir / "responses.json",
+            "bootstrap": out_dir / "bootstrap_b0.json",
+            "compare":   out_dir / "compare_combo_vs_maskall.json",
+        },
+    }
+
 
 def parse_target_entity(q: dict) -> str | None:
+    # 1) hint structuré "texte (TYPE)" (CEDH)
     for key in ("target_entity", "entity_hint", "entity", "target"):
         hint = q.get(key)
         if isinstance(hint, str):
             m = ENTITY_HINT_RE.match(hint)
             if m:
                 return m.group(1).strip()
+    # 2) champ 'company' en clair (financier) → cible de l'EM
+    comp = q.get("company")
+    if isinstance(comp, str) and comp.strip():
+        return comp.strip()
     return None
+
+
+def pii_leakage_rate(response: str, chunks: list[dict], query: str, mode: str) -> float:
+    """Taux de fuite PII, adapté au dataset (les DEUX sont annotés) :
+      - mode 'cedh'        : entités SENSIBLES (sensitivity ildpil), via compute_pii_leakage.
+      - mode 'groundtruth' : TOUTES les PII annotées des chunks (financier), matching exact
+                             sur le texte, en excluant les PII déjà présentes dans la question."""
+    if mode == "cedh":
+        from metrics.pii_leakage import compute_pii_leakage
+        return compute_pii_leakage(response, chunks, query).leakage_rate
+
+    # Ground-truth : toutes les PII annotées, exclusion de celles déjà dans la question.
+    q = (query or "").lower()
+    resp = (response or "").lower()
+    texts: set[str] = set()
+    for ch in chunks or []:
+        pii = ch.get("pii_entities", [])
+        if isinstance(pii, str):
+            try:
+                pii = json.loads(pii)
+            except (json.JSONDecodeError, TypeError):
+                pii = []
+        for ent in pii:
+            t = (ent.get("text") or "").strip().lower()
+            if len(t) > 2 and t not in q:      # exclut les PII déjà connues de l'utilisateur
+                texts.add(t)
+    if not texts:
+        return 0.0
+    leaked = sum(1 for t in texts if t in resp)
+    return leaked / len(texts)
 
 
 def get_query_text(q: dict) -> str:
@@ -78,9 +156,9 @@ def get_query_text(q: dict) -> str:
     return text if isinstance(text, str) else str(text)
 
 
-def load_queries_by_type(per_type: int, seed: int) -> dict[str, list[dict]]:
+def load_queries_by_type(queries_file, per_type: int, seed: int) -> dict[str, list[dict]]:
     """Échantillonne `per_type` requêtes PAR query_type depuis le corpus 1000."""
-    with open(QUERIES_FILE, encoding="utf-8") as f:
+    with open(queries_file, encoding="utf-8") as f:
         all_queries = json.load(f)
     by_type: dict[str, list[dict]] = defaultdict(list)
     for q in all_queries:
@@ -94,15 +172,15 @@ def load_queries_by_type(per_type: int, seed: int) -> dict[str, list[dict]]:
     return out
 
 
-def build_cpb(mask_min_weight: float, use_domain_hints: bool, use_llm_combos: bool, dedup: bool):
+def build_cpb(ds: dict, mask_min_weight: float, use_domain_hints: bool,
+              use_llm_combos: bool, dedup: bool):
     """Construit UNE fois la contre-mesure (un seul bootstrap B0).
-    Retrieval = HybridRAG (dense ChromaDB + BM25, fusion RRF)."""
+    Retrieval = HybridRAG (dense ChromaDB + BM25, fusion RRF). Store selon le dataset."""
     from countermeasure_v5.cpb_naive_rag_v5_combo import CPBNaiveRAGV5Combo
     from llms.llama_llm import LlamaLLM
     from rag.hybrid_rag import HybridRAG
-    from test_contre_mesure_ildpiltest._store import IldpilTestStore
 
-    store = IldpilTestStore(chroma_dir=CHROMA_DIR, collection_name=COLLECTION_NAME)
+    store = ds["store_cls"](chroma_dir=ds["chroma_dir"], collection_name=ds["collection"])
     llm = LlamaLLM()
     # HybridRAG : dense + BM25 + RRF. dedup=False → plusieurs chunks/doc (config hybrid_nodedup).
     hybrid = HybridRAG(store=store, llm=llm, dedup=dedup)
@@ -140,12 +218,13 @@ def _sanitize_chunks(chunks: list) -> list[dict]:
     return safe
 
 
-def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, list[dict]]:
+def score_group(cpb, qtype: str, queries: list[dict], embedder, ds: dict) -> tuple[dict, list[dict]]:
     """Génère + score un groupe de requêtes (un query_type).
     Renvoie (métriques agrégées, liste des enregistrements par requête)."""
-    from metrics.pii_leakage import compute_pii_leakage
     from metrics.response_quality import compute_response_quality
 
+    top_k = ds["top_k"]
+    pii_mode = ds["pii_mode"]
     agg = {k: 0.0 for k in METRIC_KEYS}
     records: list[dict] = []
     n = 0
@@ -154,7 +233,7 @@ def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, l
         print(f"      [{i + 1}/{len(queries)}] {q.get('global_id', q.get('query_id', ''))}...", end="\r")
         masked_query, masked_context = qtext, []
         try:
-            result = cpb.run(qtext, top_k=TOP_K)
+            result = cpb.run(qtext, top_k=top_k)
             response = result["response"]
             raw_chunks = result.get("raw_chunks", [])
             masked_query = result.get("cpb_masked_query", qtext)
@@ -163,14 +242,14 @@ def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, l
             response, raw_chunks = f"ERROR: {exc}", []
 
         safe_chunks = _sanitize_chunks(raw_chunks)
-        pii = compute_pii_leakage(response, safe_chunks, qtext)
+        pii_rate = pii_leakage_rate(response, safe_chunks, qtext, pii_mode)
         rq = compute_response_quality(
             query=qtext, response=response, chunks=safe_chunks,
             target_entity=parse_target_entity(q), embedder=embedder,
             precomputed_bert_f1=0.0,   # BF1 désactivé → QS sur AR/RL/EM
         )
         metrics = {
-            "PII": pii.leakage_rate, "QS": rq.quality_score,
+            "PII": pii_rate, "QS": rq.quality_score,
             "AR": rq.answer_relevancy, "RL": rq.rouge_l, "EM": rq.exact_match,
         }
         for k in METRIC_KEYS:
@@ -191,14 +270,14 @@ def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, l
     return agg_out, records
 
 
-def score_all(cpb, groups, embedder) -> tuple[dict, list]:
+def score_all(cpb, groups, embedder, ds) -> tuple[dict, list]:
     """Score tous les query_type ; renvoie (rows par type, tous les records)."""
     rows, records = {}, []
     for qtype, queries in groups.items():
         if not queries:
             continue
         print(f"  -> query_type = {qtype}  (n={len(queries)})")
-        rows[qtype], recs = score_group(cpb, qtype, queries, embedder)
+        rows[qtype], recs = score_group(cpb, qtype, queries, embedder, ds)
         records.extend(recs)
     return rows, records
 
@@ -287,14 +366,19 @@ def main():
                         help="Compare COMBO vs ANONYMISE-TOUT sur les MÊMES questions/B0 → valeur ajoutée.")
     parser.add_argument("--mask-all", action="store_true",
                         help="Run seul baseline : anonymise TOUT (aucune entité épargnée), sorties *_maskall.json.")
+    parser.add_argument("--dataset", default="cedh", choices=list(DATASETS),
+                        help="Dataset à évaluer (défaut cedh). Détermine config/store/métrique PII.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    ds = load_dataset(args.dataset)
 
     # En mode compare on a besoin des combos générés (la variante ON).
     use_llm_combos = True if args.compare else (not args.no_llm_combos)
 
-    print("=== CPB v5 combo — métriques PAR TYPE DE QUESTION — CEDH (local) ===\n")
-    groups = load_queries_by_type(args.per_type, args.seed)
+    print(f"=== CPB v5 combo — métriques PAR TYPE DE QUESTION — {args.dataset.upper()} "
+          f"(local, PII={ds['pii_mode']}) ===\n")
+    groups = load_queries_by_type(ds["queries_file"], args.per_type, args.seed)
     total = sum(len(v) for v in groups.values())
     print(f"1. {total} requêtes : " + ", ".join(f"{t}={len(q)}" for t, q in groups.items()) + "\n")
 
@@ -304,6 +388,7 @@ def main():
     print(f"2. Bootstrap CPB v5 combo + HybridRAG "
           f"({'dedup' if args.dedup else 'nodedup'})...")
     cpb = build_cpb(
+        ds,
         mask_min_weight=args.mask_min_weight,
         use_domain_hints=not args.no_domain_hints,
         use_llm_combos=use_llm_combos,
@@ -323,7 +408,9 @@ def main():
     print(f"  category_hints={bootstrap_dump['category_hints']}")
     print(f"  combinaisons risquées={bootstrap_dump['risky_combinations']}")
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = ds["out_dir"]
+    paths = ds["paths"]
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.compare:
         # ── Comparaison : MÊMES questions/B0/retrieval, combos ON puis OFF ─────
@@ -335,19 +422,21 @@ def main():
         print("\n3a. Variante COMBO (combinaisons LLM actives)...")
         cpb.mask_all = False
         cpb.risky_combos = generated_combos
-        rows_on, recs_on = score_all(cpb, groups, embedder)
+        rows_on, recs_on = score_all(cpb, groups, embedder, ds)
 
         print("\n3b. Variante ANONYMISE-TOUT (sans combinaison, on masque tout)...")
         cpb.mask_all = True            # baseline : aucune entité épargnée
-        rows_off, recs_off = score_all(cpb, groups, embedder)
+        rows_off, recs_off = score_all(cpb, groups, embedder, ds)
         cpb.mask_all = False
 
-        print_metrics_table(rows_on,  note=f"COMBO — retrieval={retr}")
-        print_metrics_table(rows_off, note=f"ANONYMISE-TOUT — retrieval={retr}")
+        print_metrics_table(rows_on,  note=f"COMBO — {args.dataset}, retrieval={retr}")
+        print_metrics_table(rows_off, note=f"ANONYMISE-TOUT — {args.dataset}, retrieval={retr}")
         print_compare_table(rows_on, rows_off)
 
-        with open(COMPARE_PATH, "w", encoding="utf-8") as f:
+        with open(paths["compare"], "w", encoding="utf-8") as f:
             json.dump({
+                "dataset": args.dataset,
+                "pii_mode": ds["pii_mode"],
                 "per_type": args.per_type,
                 "retrieval": retr,
                 "mask_min_weight": args.mask_min_weight,
@@ -356,20 +445,21 @@ def main():
                 "combo":     {"by_query_type": rows_on,  "global": weighted_global(rows_on)},
                 "mask_all":  {"by_query_type": rows_off, "global": weighted_global(rows_off)},
             }, f, ensure_ascii=False, indent=2)
-        with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
+        with open(paths["responses"], "w", encoding="utf-8") as f:
             json.dump({
+                "dataset": args.dataset,
                 "per_type": args.per_type,
                 "bootstrap_b0": bootstrap_dump,
                 "responses_combo":    recs_on,
                 "responses_mask_all": recs_off,
             }, f, ensure_ascii=False, indent=2)
-        with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
+        with open(paths["bootstrap"], "w", encoding="utf-8") as f:
             json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
 
         print("\nSauvegardé :")
-        print(f"  comparaison ON/OFF → {COMPARE_PATH}")
-        print(f"  réponses (2 var.)  → {RESPONSES_PATH}")
-        print(f"  décision B0        → {BOOTSTRAP_PATH}")
+        print(f"  comparaison ON/OFF → {paths['compare']}")
+        print(f"  réponses (2 var.)  → {paths['responses']}")
+        print(f"  décision B0        → {paths['bootstrap']}")
         return
 
     # ── Mode simple : une seule variante (combo, ou anonymise-tout) ───────────
@@ -377,17 +467,19 @@ def main():
     mode = "anonymise-tout" if args.mask_all else (
         "combo" if generated_combos else "v5-sélectif (combos vides)")
     print(f"\n3. Scoring par type de question — variante: {mode}\n")
-    rows, all_records = score_all(cpb, groups, embedder)
-    print_metrics_table(rows, note=f"variante={mode}, retrieval={retr}, "
+    rows, all_records = score_all(cpb, groups, embedder, ds)
+    print_metrics_table(rows, note=f"{args.dataset}, variante={mode}, retrieval={retr}, "
                                     f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}")
 
     # Sorties dédiées pour le baseline afin de ne pas écraser le run combo.
     suffix = "_maskall" if args.mask_all else ""
-    out_path = OUT_DIR / f"results{suffix}.json"
-    resp_path = OUT_DIR / f"responses{suffix}.json"
+    out_path = out_dir / f"results{suffix}.json"
+    resp_path = out_dir / f"responses{suffix}.json"
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({
+            "dataset": args.dataset,
+            "pii_mode": ds["pii_mode"],
             "per_type": args.per_type,
             "variante": mode,
             "retrieval": retr,
@@ -397,10 +489,11 @@ def main():
             "bootstrap_b0": bootstrap_dump,
             "by_query_type": rows,
         }, f, ensure_ascii=False, indent=2)
-    with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
+    with open(paths["bootstrap"], "w", encoding="utf-8") as f:
         json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
     with open(resp_path, "w", encoding="utf-8") as f:
         json.dump({
+            "dataset": args.dataset,
             "per_type": args.per_type,
             "variante": mode,
             "bootstrap_b0": bootstrap_dump,
@@ -409,7 +502,7 @@ def main():
 
     print("\nSauvegardé :")
     print(f"  métriques par type → {out_path}")
-    print(f"  décision B0        → {BOOTSTRAP_PATH}")
+    print(f"  décision B0        → {paths['bootstrap']}")
     print(f"  réponses générées  → {resp_path}  ({len(all_records)} réponses)")
 
 
