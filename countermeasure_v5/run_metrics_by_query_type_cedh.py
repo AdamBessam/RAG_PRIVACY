@@ -55,6 +55,7 @@ OUT_DIR = ROOT / "data" / "cedh_metrics_by_query_type"
 OUT_PATH = OUT_DIR / "results.json"
 RESPONSES_PATH = OUT_DIR / "responses.json"
 BOOTSTRAP_PATH = OUT_DIR / "bootstrap_b0.json"
+COMPARE_PATH = OUT_DIR / "compare_combo_vs_v5.json"
 
 ENTITY_HINT_RE = re.compile(r"^(.*) \([A-Z_]+\)$")
 METRIC_KEYS = ("PII", "QS", "AR", "RL", "EM")
@@ -190,6 +191,84 @@ def score_group(cpb, qtype: str, queries: list[dict], embedder) -> tuple[dict, l
     return agg_out, records
 
 
+def score_all(cpb, groups, embedder) -> tuple[dict, list]:
+    """Score tous les query_type ; renvoie (rows par type, tous les records)."""
+    rows, records = {}, []
+    for qtype, queries in groups.items():
+        if not queries:
+            continue
+        print(f"  -> query_type = {qtype}  (n={len(queries)})")
+        rows[qtype], recs = score_group(cpb, qtype, queries, embedder)
+        records.extend(recs)
+    return rows, records
+
+
+def weighted_global(rows: dict) -> dict | None:
+    tot_n = sum(r["n"] for r in rows.values())
+    if not tot_n:
+        return None
+    return {"n": tot_n, **{k: sum(r[k] * r["n"] for r in rows.values()) / tot_n for k in METRIC_KEYS}}
+
+
+def print_metrics_table(rows: dict, note: str = "") -> None:
+    print("\n" + "=" * 74)
+    print("  MÉTRIQUES PAR TYPE DE QUESTION  (PII ↓ = mieux, QS/AR/RL/EM ↑ = mieux)")
+    if note:
+        print(f"  {note}")
+    print("=" * 74)
+    print(f"  {'query_type':>11} {'n':>4} {'PII':>8} {'QS':>8} {'AR':>8} {'RL':>8} {'EM':>8}")
+    print("-" * 74)
+    for qtype, r in rows.items():
+        print(f"  {qtype:>11} {r['n']:>4} {r['PII']:>8.4f} {r['QS']:>8.4f} "
+              f"{r['AR']:>8.4f} {r['RL']:>8.4f} {r['EM']:>8.4f}")
+    g = weighted_global(rows)
+    if g:
+        print("-" * 74)
+        print(f"  {'GLOBAL':>11} {g['n']:>4} {g['PII']:>8.4f} {g['QS']:>8.4f} "
+              f"{g['AR']:>8.4f} {g['RL']:>8.4f} {g['EM']:>8.4f}")
+    print("=" * 74)
+
+
+def print_compare_table(rows_on: dict, rows_off: dict) -> None:
+    """Comparaison COMBO ON vs OFF, par type. Δ = ON − OFF.
+    ΔPII<0 = combos réduisent la fuite (mieux) ; ΔQS>0 = combos gardent l'utilité."""
+    print("\n" + "=" * 78)
+    print("  VALEUR AJOUTÉE DES COMBINAISONS  —  COMBO(on) vs v5(off)   Δ = on − off")
+    print("  ΔPII < 0 → combos réduisent la fuite (mieux) | ΔQS > 0 → utilité préservée")
+    print("=" * 78)
+    print(f"  {'query_type':>11} | {'PII_on':>7} {'PII_off':>7} {'ΔPII':>7} "
+          f"| {'QS_on':>7} {'QS_off':>7} {'ΔQS':>7}")
+    print("-" * 78)
+    types = list(rows_on.keys())
+    for t in types:
+        a, b = rows_on[t], rows_off.get(t, {})
+        dpii = a["PII"] - b.get("PII", 0.0)
+        dqs = a["QS"] - b.get("QS", 0.0)
+        print(f"  {t:>11} | {a['PII']:>7.4f} {b.get('PII', 0):>7.4f} {dpii:>+7.4f} "
+              f"| {a['QS']:>7.4f} {b.get('QS', 0):>7.4f} {dqs:>+7.4f}")
+    ga, gb = weighted_global(rows_on), weighted_global(rows_off)
+    if ga and gb:
+        print("-" * 78)
+        print(f"  {'GLOBAL':>11} | {ga['PII']:>7.4f} {gb['PII']:>7.4f} {ga['PII'] - gb['PII']:>+7.4f} "
+              f"| {ga['QS']:>7.4f} {gb['QS']:>7.4f} {ga['QS'] - gb['QS']:>+7.4f}")
+    print("=" * 78)
+
+
+def dump_bootstrap(cpb) -> dict:
+    br = cpb.bootstrap_result
+    return {
+        "domain":             getattr(br, "domain", None),
+        "domain_confidence":  getattr(br, "domain_confidence", None),
+        "domain_source":      getattr(br, "domain_source", None),
+        "used_fallback":      getattr(br, "used_fallback", None),
+        "categories":         getattr(br, "dynamic_categories", []),
+        "category_hints":     {k: sorted(v) for k, v in (getattr(br, "category_hints", {}) or {}).items()},
+        "taxonomy":           {k: list(v) for k, v in (getattr(br, "dynamic_taxonomy", {}) or {}).items()},
+        "learned_types":      sorted(getattr(br, "learned_types", set()) or set()),
+        "risky_combinations": [sorted(c) for c in getattr(cpb, "risky_combos", [])],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Métriques CPB v5 contextuel ventilées par type de question (CEDH, local, sans OpenAI).")
@@ -203,10 +282,13 @@ def main():
                         help="Désactive la génération LLM des combinaisons → fallback masquage v5.")
     parser.add_argument("--dedup", action="store_true",
                         help="HybridRAG : 1 chunk par doc. Par défaut nodedup (plusieurs chunks/doc).")
+    parser.add_argument("--compare", action="store_true",
+                        help="Compare COMBO(on) vs v5(off) sur les MÊMES questions/B0 → valeur ajoutée.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    use_llm_combos = not args.no_llm_combos
+    # En mode compare on a besoin des combos générés (la variante ON).
+    use_llm_combos = True if args.compare else (not args.no_llm_combos)
 
     print("=== CPB v5 combo — métriques PAR TYPE DE QUESTION — CEDH (local) ===\n")
     groups = load_queries_by_type(args.per_type, args.seed)
@@ -225,66 +307,86 @@ def main():
         dedup=args.dedup,
     )
 
-    print("\n3. Scoring par type de question...\n")
-    rows: dict[str, dict] = {}
-    all_records: list[dict] = []
-    for qtype, queries in groups.items():
-        if not queries:
-            continue
-        print(f"  -> query_type = {qtype}  (n={len(queries)})")
-        rows[qtype], recs = score_group(cpb, qtype, queries, embedder)
-        all_records.extend(recs)
+    # ── Décision B0 (commune aux deux variantes) ─────────────────────────────
+    bootstrap_dump = dump_bootstrap(cpb)
+    generated_combos = list(getattr(cpb, "risky_combos", []))
+    retr = f"hybrid_{'dedup' if args.dedup else 'nodedup'}"
 
-    # ── Tableau comparatif par type ──────────────────────────────────────────
-    print("\n" + "=" * 74)
-    print("  MÉTRIQUES PAR TYPE DE QUESTION  (PII ↓ = mieux, QS/AR/RL/EM ↑ = mieux)")
-    print(f"  retrieval=HybridRAG ({'dedup' if args.dedup else 'nodedup'}), "
-          f"llm_combos={'ON' if use_llm_combos else 'OFF (fallback v5)'}, "
-          f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}")
-    print("=" * 74)
-    print(f"  {'query_type':>11} {'n':>4} {'PII':>8} {'QS':>8} {'AR':>8} {'RL':>8} {'EM':>8}")
-    print("-" * 74)
-    for qtype, r in rows.items():
-        print(f"  {qtype:>11} {r['n']:>4} {r['PII']:>8.4f} {r['QS']:>8.4f} "
-              f"{r['AR']:>8.4f} {r['RL']:>8.4f} {r['EM']:>8.4f}")
-    # Moyenne globale (pondérée par n)
-    tot_n = sum(r["n"] for r in rows.values())
-    if tot_n:
-        glob = {k: sum(r[k] * r["n"] for r in rows.values()) / tot_n for k in METRIC_KEYS}
-        print("-" * 74)
-        print(f"  {'GLOBAL':>11} {tot_n:>4} {glob['PII']:>8.4f} {glob['QS']:>8.4f} "
-              f"{glob['AR']:>8.4f} {glob['RL']:>8.4f} {glob['EM']:>8.4f}")
-    print("=" * 74)
-
-    # ── Décision B0 (bootstrap) : domaine + tout ce dont il est rempli ────────
-    br = cpb.bootstrap_result
-    bootstrap_dump = {
-        "domain":             getattr(br, "domain", None),
-        "domain_confidence":  getattr(br, "domain_confidence", None),
-        "domain_source":      getattr(br, "domain_source", None),
-        "used_fallback":      getattr(br, "used_fallback", None),
-        "categories":         getattr(br, "dynamic_categories", []),
-        "category_hints":     {k: sorted(v) for k, v in (getattr(br, "category_hints", {}) or {}).items()},
-        "taxonomy":           {k: list(v) for k, v in (getattr(br, "dynamic_taxonomy", {}) or {}).items()},
-        "learned_types":      sorted(getattr(br, "learned_types", set()) or set()),
-        "risky_combinations": [sorted(c) for c in getattr(cpb, "risky_combos", [])],
-    }
+    print("\n── Décision B0 ──")
+    print(f"  domaine={bootstrap_dump['domain']} "
+          f"(conf={bootstrap_dump['domain_confidence']}, source={bootstrap_dump['domain_source']}, "
+          f"fallback={bootstrap_dump['used_fallback']})")
+    print(f"  catégories={bootstrap_dump['categories']}")
+    print(f"  category_hints={bootstrap_dump['category_hints']}")
+    print(f"  combinaisons risquées={bootstrap_dump['risky_combinations']}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.compare:
+        # ── Comparaison : MÊMES questions/B0/retrieval, combos ON puis OFF ─────
+        if not generated_combos:
+            print("\n⚠  Aucune combinaison générée → COMBO(on) == v5(off) : "
+                  "comparaison dégénérée (deltas nuls).")
+
+        print("\n3a. Variante COMBO ON (combinaisons LLM actives)...")
+        cpb.risky_combos = generated_combos
+        rows_on, recs_on = score_all(cpb, groups, embedder)
+
+        print("\n3b. Variante v5 OFF (sans l'effet de la combinaison LLM)...")
+        cpb.risky_combos = []          # retire UNIQUEMENT la logique de combinaison
+        rows_off, recs_off = score_all(cpb, groups, embedder)
+
+        print_metrics_table(rows_on,  note=f"COMBO ON — retrieval={retr}")
+        print_metrics_table(rows_off, note=f"v5 OFF (sans combinaison) — retrieval={retr}")
+        print_compare_table(rows_on, rows_off)
+
+        with open(COMPARE_PATH, "w", encoding="utf-8") as f:
+            json.dump({
+                "per_type": args.per_type,
+                "retrieval": retr,
+                "mask_min_weight": args.mask_min_weight,
+                "domain_hints": not args.no_domain_hints,
+                "bootstrap_b0": bootstrap_dump,
+                "combo_on": {"by_query_type": rows_on,  "global": weighted_global(rows_on)},
+                "v5_off":   {"by_query_type": rows_off, "global": weighted_global(rows_off)},
+            }, f, ensure_ascii=False, indent=2)
+        with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
+            json.dump({
+                "per_type": args.per_type,
+                "bootstrap_b0": bootstrap_dump,
+                "responses_combo_on": recs_on,
+                "responses_v5_off":   recs_off,
+            }, f, ensure_ascii=False, indent=2)
+        with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
+            json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
+
+        print("\nSauvegardé :")
+        print(f"  comparaison ON/OFF → {COMPARE_PATH}")
+        print(f"  réponses (2 var.)  → {RESPONSES_PATH}")
+        print(f"  décision B0        → {BOOTSTRAP_PATH}")
+        return
+
+    # ── Mode simple : une seule variante ──────────────────────────────────────
+    print("\n3. Scoring par type de question...\n")
+    rows, all_records = score_all(cpb, groups, embedder)
+    print_metrics_table(
+        rows,
+        note=f"retrieval={retr}, llm_combos={'ON' if use_llm_combos else 'OFF (fallback v5)'}, "
+             f"domain_hints={'OFF' if args.no_domain_hints else 'ON'}",
+    )
+
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
-            "retrieval": f"hybrid_{'dedup' if args.dedup else 'nodedup'}",
+            "retrieval": retr,
             "mask_min_weight": args.mask_min_weight,
             "llm_combos": use_llm_combos,
             "domain_hints": not args.no_domain_hints,
             "bootstrap_b0": bootstrap_dump,
             "by_query_type": rows,
         }, f, ensure_ascii=False, indent=2)
-
     with open(BOOTSTRAP_PATH, "w", encoding="utf-8") as f:
         json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
-
     with open(RESPONSES_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "per_type": args.per_type,
@@ -297,15 +399,6 @@ def main():
     print(f"  métriques par type → {OUT_PATH}")
     print(f"  décision B0        → {BOOTSTRAP_PATH}")
     print(f"  réponses générées  → {RESPONSES_PATH}  ({len(all_records)} réponses)")
-
-    # Aperçu console de la décision B0
-    print("\n── Décision B0 ──")
-    print(f"  domaine={bootstrap_dump['domain']} "
-          f"(conf={bootstrap_dump['domain_confidence']}, source={bootstrap_dump['domain_source']}, "
-          f"fallback={bootstrap_dump['used_fallback']})")
-    print(f"  catégories={bootstrap_dump['categories']}")
-    print(f"  category_hints={bootstrap_dump['category_hints']}")
-    print(f"  combinaisons risquées={bootstrap_dump['risky_combinations']}")
 
 
 if __name__ == "__main__":
