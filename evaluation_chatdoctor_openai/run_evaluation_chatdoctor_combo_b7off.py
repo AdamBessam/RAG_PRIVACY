@@ -113,7 +113,7 @@ GPT4O_JUDGE_MODEL = "gpt-4o"
 # passent) → sécurité réduite. Réglé UNIQUEMENT sur l'instance SAD du combo de ce
 # run ; countermeasure_v4/ n'est pas touché (les autres runs gardent 0.42).
 # Mettre à None pour laisser le défaut 0.42.
-SAD_SBERT_THRESHOLD: float | None = 0.60
+SAD_SBERT_THRESHOLD: float | None = 0.50
 
 
 # ── ChromaStore médical, embeddings text-embedding-3-small (isolé) ────────────

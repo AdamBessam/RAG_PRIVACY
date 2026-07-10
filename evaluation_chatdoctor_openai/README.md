@@ -71,7 +71,7 @@ Rollback = supprimer ce dossier + `data/chatdoctor_eval_openai_combo_b7off/`
 Les blocages complets (« This information cannot be disclosed as it contains
 multiple sensitive personal attributes. ») viennent du **bloc B6 (détecteur SAD)**,
 pas de B7. Pour en réduire le nombre, la constante `SAD_SBERT_THRESHOLD` (défaut
-`0.60`, vs `0.42` dans le code) **relève la porte SBERT (F2)** de B6, **sur la seule
+`0.50`, vs `0.42` dans le code) **relève la porte SBERT (F2)** de B6, **sur la seule
 instance de ce run** (`countermeasure_v4/` n'est pas modifié).
 
 ⚠️ **Compromis assumé** : seuil plus haut = moins de blocages gênants **mais** plus
