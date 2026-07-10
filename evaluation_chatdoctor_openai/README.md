@@ -30,6 +30,17 @@ Prérequis machine : clé OpenAI (`config.OPENAI_API_KEY`), `rank_bm25`, `ragas=
 Le run est **checkpointé** (génération, AE, PI, références, RAGAS) : un crash reprend
 où il s'était arrêté.
 
+## Sorties (dans `data/chatdoctor_eval_openai_combo_b7off/`)
+
+| Fichier | Contenu |
+|---|---|
+| `responses.json` | réponses finales du système protégé (300) |
+| `reference_responses.json` | réponses gold de référence (copie locale) |
+| `results_per_query.csv` | 1 ligne/requête : `query`, `reference`, `response`, LO, AE, PI |
+| `exemples_questions_reponses.md` | lisible : Question / Réponse de référence / Réponse du système |
+| `results.json` | métriques agrégées + `responses` + `reference_responses` + per-instance |
+| `contexts.json` | chunks bruts récupérés par requête |
+
 ## Métriques (rappel des directions)
 
 | | Sens | Description |

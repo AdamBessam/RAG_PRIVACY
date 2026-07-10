@@ -93,8 +93,10 @@ CHUNK_OVERLAP     = 50
 RESPONSES_PATH  = DATA_DIR / "responses.json"
 CONTEXTS_PATH   = DATA_DIR / "contexts.json"
 CPB_RESULTS_PATH = DATA_DIR / "cpb_results.json"           # {response, contexts} checkpointé par instance
+REFERENCES_PATH = DATA_DIR / "reference_responses.json"    # copie LOCALE des réponses gold de ce run
 RESULTS_PATH    = DATA_DIR / "results.json"
 CSV_PATH        = DATA_DIR / "results_per_query.csv"
+EXAMPLES_MD_PATH = DATA_DIR / "exemples_questions_reponses.md"  # question / référence / réponse (lisible)
 EXPERIMENT_NAME = "chatdoctor_evaluation"
 
 UTILITY_CHUNKS_DIR = DATA_DIR / "utility_chunks"
@@ -371,6 +373,62 @@ def compute_utility_chunked(
     }
 
 
+# ── Export lisible : question / référence / réponse système ──────────────────
+def write_examples_markdown(
+    attacks: list[dict],
+    references: list[str],
+    responses: list[str],
+    path: Path,
+    n: int | None = None,
+) -> None:
+    """Écrit un markdown lisible (même format que les autres runs) alignant, pour
+    chaque requête : la question d'attaque, la réponse de référence gold, et la
+    réponse finale du système protégé. n=None → toutes les requêtes."""
+    lines = [
+        "# Exemples de questions et de réponses",
+        "## Benchmark RAG & Privacy — ChatDoctor · CPB v5 combo · B7 OFF",
+        "",
+        "Run : retrieval hybride (dense + BM25, fusion RRF), sans déduplication, "
+        "LLM gpt-4o-mini, embeddings text-embedding-3-small. "
+        "Dataset médical ChatDoctor / HealthCareMagic (300 requêtes).",
+        "",
+        "Pour chaque cas :",
+        "- **Question** : requête d'attaque (fournit des infos connues pour tenter "
+        "d'extraire l'attribut sensible du dialogue)",
+        "- **Réponse de référence** : vérité terrain (réponse gold GPT-4o avec accès au document)",
+        "- **Réponse du système (RAG + CPB v5 combo, B7 off)** : notre système protégé "
+        "(masquage par combinaisons ré-identifiantes domain-aware, **sans** ResponseGuard final)",
+        "",
+        "---",
+        "",
+    ]
+    m = len(attacks) if n is None else min(n, len(attacks))
+    for i in range(m):
+        a = attacks[i]
+        ref = references[i] if i < len(references) else ""
+        resp = responses[i] if i < len(responses) else ""
+        lines += [
+            f"## Exemple {i + 1} — {a.get('doc_id', '')}",
+            "",
+            "**Question :**",
+            "",
+            f"> {a.get('query', '')}",
+            "",
+            "**Réponse de référence :**",
+            "",
+            ref,
+            "",
+            "**Réponse du système (RAG + CPB v5 combo, B7 off) :**",
+            "",
+            resp,
+            "",
+            "---",
+            "",
+        ]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 # ── Tableau de résultats ─────────────────────────────────────────────────────
 def print_results_table(metrics: dict) -> None:
     order = ["LO_F1", "AE", "PI", "CR", "SS", "AR"]
@@ -448,14 +506,20 @@ def main(skip_generation: bool = False):
     # 4. Utilité — RAGAS (context_recall) chunké
     print("\n4. Utility metrics (RAGAS + GPT-4o, cached per chunk)...")
     references = generate_reference_responses(attacks, doc_index)
+    # Copie LOCALE des réponses gold dans le dossier de ce run (la source est le
+    # cache médical partagé data/chatdoctor_eval/reference_responses.json ; on en
+    # garde une copie ici pour que le run soit autonome/archivable).
+    with open(REFERENCES_PATH, "w", encoding="utf-8") as f:
+        json.dump(references, f, ensure_ascii=False, indent=2)
+    print(f"   Reference responses saved → {REFERENCES_PATH}")
     utility = compute_utility_chunked(attacks, responses, contexts_per_query, references)
     print(f"   CR={utility['CR']:.4f}  SS={utility['SS']:.4f}  AR={utility['AR']:.4f}")
 
-    # 5. CSV
-    print("\n5. CSV export...")
+    # 5. CSV + markdown lisible (question / référence / réponse)
+    print("\n5. CSV + markdown export...")
     with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "index", "doc_id", "query", "response",
+            "index", "doc_id", "query", "reference", "response",
             "LO_precision", "LO_recall", "LO_f1", "AE", "PI",
         ])
         writer.writeheader()
@@ -465,6 +529,7 @@ def main(skip_generation: bool = False):
                 "index":        i,
                 "doc_id":       attack.get("doc_id", ""),
                 "query":        attack.get("query", ""),
+                "reference":    references[i] if i < len(references) else "",
                 "response":     resp,
                 "LO_precision": round(lo.get("precision", 0.0), 4),
                 "LO_recall":    round(lo.get("recall",    0.0), 4),
@@ -473,6 +538,9 @@ def main(skip_generation: bool = False):
                 "PI":           round(pi_scores[i],   4) if i < len(pi_scores)   else "",
             })
     print(f"   CSV saved → {CSV_PATH}")
+
+    write_examples_markdown(attacks, references, responses, EXAMPLES_MD_PATH)
+    print(f"   Examples markdown saved → {EXAMPLES_MD_PATH}")
 
     cpb_metrics = {
         "LO_F1": lo_agg["f1"], "AE": ae_score, "PI": pi_score,
@@ -488,6 +556,8 @@ def main(skip_generation: bool = False):
         "ablation":        "b7_off",
         "n_instances":     len(attacks),
         "metrics":         cpb_metrics,
+        "responses":            responses,    # réponses finales du système protégé
+        "reference_responses":  references,   # réponses gold (vérité terrain)
         "per_instance":    {"LO": lo_results, "AE": ae_results, "PI": pi_scores},
     }
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
@@ -523,6 +593,8 @@ def main(skip_generation: bool = False):
 
         mlflow.log_artifact(str(RESULTS_PATH))
         mlflow.log_artifact(str(CSV_PATH))
+        mlflow.log_artifact(str(REFERENCES_PATH))
+        mlflow.log_artifact(str(EXAMPLES_MD_PATH))
 
     print_results_table(cpb_metrics)
 

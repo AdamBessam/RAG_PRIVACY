@@ -386,6 +386,12 @@ def main(skip_generation: bool = False) -> None:
     print("\n[5] Computing all metrics...")
     metrics = compute_all_metrics(attacks, doc_index, responses, contexts_per_query, references)
 
+    # Export lisible (question / référence / réponse), même format que le run complet.
+    from run_evaluation_chatdoctor_combo_b7off import write_examples_markdown
+    md_path = TEST_DATA_DIR / "exemples_questions_reponses.md"
+    write_examples_markdown(attacks, references, responses, md_path)
+    print(f"\nExamples markdown -> {md_path}")
+
     print_results_table(metrics)
 
     out = {"n_queries": len(attacks), "doc_ids": list(doc_index.keys()), "metrics": metrics}
