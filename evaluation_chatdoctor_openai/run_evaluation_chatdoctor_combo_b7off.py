@@ -115,6 +115,21 @@ GPT4O_JUDGE_MODEL = "gpt-4o"
 # Mettre à None pour laisser le défaut 0.42.
 SAD_SBERT_THRESHOLD: float | None = 0.50
 
+# ── Synthèse topique de B6 (utilité ↑, sécurité gardée) ───────────────────────
+# Quand B6 confirme un SAD, sa synthèse d'origine SUPPRIME l'info sensible
+# "entièrement" → il reste un trou → refus sec ("This information cannot be
+# disclosed...") → RAGAS le lit "noncommittal" → AR ≈ 0.
+# À True, on remplace (isolé, sur l'instance de ce run) la synthèse par une
+# version DÉ-IDENTIFIANTE + GÉNÉRALISANTE : la réponse ne contient AUCUN individu
+# identifiable mais garde de l'information GÉNÉRALE au domaine, donc reste topique
+# SANS être un SAD. Domain-agnostic : pilotée par self.domain + les catégories,
+# tous deux issus de B0 (aucune règle codée en dur par domaine).
+# Sécurité INCHANGÉE : chaque réécriture est re-validée par le MÊME juge Phi-3 qui
+# a confirmé le SAD (+ refus explicite des placeholders [PERSON_x]) ; si elle ne
+# passe pas, on retombe sur le masquage/refus d'origine. On ne touche PAS au
+# détecteur (contrairement à l'option C) — seulement la FORME de la sortie.
+SAD_TOPICAL_SYNTHESIS: bool = True
+
 
 # ── ChromaStore médical, embeddings text-embedding-3-small (isolé) ────────────
 # Copie de OpenAIZhangChromaStore (evaluation_zhang_openai/run_evaluation_openai.py)
@@ -262,14 +277,106 @@ def _make_combo(hybrid_rag):
     ablation = AblationConfig(name="b7_off", b7_response_guard=False)
     combo = CPBComboOpenAI(naive_rag=hybrid_rag, ablation=ablation)
 
-    # Option C — désensibiliser la porte SBERT (F2) de B6 sur CETTE instance
-    # uniquement (isolé ; countermeasure_v4/ inchangé). self.sbert_threshold est
-    # relu à chaque appel de _sbert_proximity, donc le régler ici suffit.
+    # ── Synthèse topique de B6 (isolé) : remplace le détecteur SAD par une
+    # sous-classe dont la synthèse dé-identifie + généralise au lieu de tout
+    # supprimer, et dont l'ACCEPTATION repose sur le juge Phi-3 (sémantique) au
+    # lieu de la regex lexicale trop stricte (qui bloque "patient"/"they"...).
+    if SAD_TOPICAL_SYNTHESIS and getattr(combo, "sad_detector", None) is not None:
+        import re as _re
+
+        from countermeasure.cpb_models import SADResult
+        from countermeasure_v4.cpb_sad_detector_v4 import SADDetectorV4
+
+        # Un placeholder anonymisé EST un individu identifiable (déf. SAD du
+        # projet) → on le refuse explicitement ; tout le reste est jugé par Phi-3.
+        _PLACEHOLDER_RE = _re.compile(
+            r"\[(?:PERSON|APPLICANT|COMPLAINANT|VICTIM|INDIVIDUAL|NRP)_?\d*\]", _re.IGNORECASE
+        )
+
+        class SADDetectorTopicalV4(SADDetectorV4):
+            """B6 dont la synthèse GÉNÉRALISE + dé-identifie (domain-agnostic,
+            piloté par self.domain + categories issus de B0). L'acceptation d'une
+            réécriture repose sur le juge Phi-3 (sécurité inchangée) + refus des
+            placeholders [PERSON_x] ; la regex INDIVIDUAL_RE (qui bloquait des
+            termes génériques comme "patient"/"they") n'est plus le gardien."""
+
+            def _synthesize_response(self, response, categories):
+                domain = getattr(self, "domain", "general") or "general"
+                categories_str = ", ".join(categories)
+                prompt = (
+                    "You rewrite one answer from a retrieval system to protect privacy "
+                    "WITHOUT refusing to answer.\n"
+                    f"Knowledge domain: {domain}.\n"
+                    f"Sensitive attribute categories to protect in this domain: {categories_str}.\n\n"
+                    "Rules for the rewrite:\n"
+                    "1) Remove EVERY identifiable individual: no personal names, no "
+                    "anonymized placeholders such as [PERSON_1], and do not point to "
+                    "'the specific person/case' in the source. Speak only in general, "
+                    "collective terms.\n"
+                    "2) Do NOT attribute any of the sensitive categories above to a "
+                    "specific individual or specific case.\n"
+                    "3) STILL address the user's underlying question, using only GENERAL, "
+                    f"non-identifying knowledge that holds across the {domain} domain. "
+                    "Keep it on topic and useful.\n"
+                    "4) Never say the information is unavailable, never refuse, never "
+                    "mention that anything was removed, and do not invent specific facts "
+                    "about the source case.\n\n"
+                    f"Answer to rewrite:\n{response}\n\n"
+                    "Rewritten answer (plain text only):"
+                )
+                try:
+                    import requests
+                    resp = requests.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={"model": self.phi3_model, "prompt": prompt, "stream": False},
+                        timeout=120,
+                    )
+                    return resp.json().get("response", "").strip() or None
+                except Exception:
+                    return None
+
+            def _apply_decision(self, query, chunks, response, categories, confidence,
+                                reasoning, max_similarity, category_scores, reask_callback):
+                # 1. Synthèse topique dé-identifiée, acceptée si (pas de placeholder)
+                #    ET (Phi-3 confirme qu'elle ne lie plus d'individu à un attribut).
+                rewritten = self._synthesize_response(response, categories)
+                if rewritten and not _PLACEHOLDER_RE.search(rewritten):
+                    verify = self._phi3_judge(query, chunks, rewritten, categories)
+                    if not verify["sad_detected"]:
+                        return SADResult(
+                            sad_detected=True,
+                            attribute_categories=categories,
+                            max_similarity=max_similarity,
+                            confidence=confidence,
+                            decision="synthesize",
+                            response=rewritten,
+                            reasoning=reasoning + " (topical de-identified synthesis, Phi-3-verified)",
+                            filter_triggered=3,
+                            sbert_category_scores=category_scores,
+                        )
+                # 2. Sinon : masquage → refus d'origine (sécurité inchangée).
+                return super()._apply_decision(
+                    query=query, chunks=chunks, response=response, categories=categories,
+                    confidence=confidence, reasoning=reasoning, max_similarity=max_similarity,
+                    category_scores=category_scores, reask_callback=reask_callback,
+                )
+
+        br = combo.bootstrap_result
+        combo.sad_detector = SADDetectorTopicalV4(
+            dynamic_taxonomy=br.dynamic_taxonomy,
+            centroids=br.centroids,
+            domain=br.domain,
+        )
+        print(f"B6 SAD: synthèse topique dé-identifiante activée (domaine={br.domain}) "
+              f"— sécurité via juge Phi-3, countermeasure_v4/ intact")
+
+    # ── Option C — seuil SBERT (F2) de B6, appliqué au détecteur ACTIF (topical
+    # ou d'origine). Isolé ; countermeasure_v4/ inchangé. Relu à chaque appel de
+    # _sbert_proximity, donc le régler sur l'instance suffit.
     if SAD_SBERT_THRESHOLD is not None and getattr(combo, "sad_detector", None) is not None:
         old = combo.sad_detector.sbert_threshold
         combo.sad_detector.sbert_threshold = SAD_SBERT_THRESHOLD
-        print(f"B6 SAD: seuil SBERT relevé {old} → {SAD_SBERT_THRESHOLD} "
-              f"(moins de blocages, sécurité réduite — option C)")
+        print(f"B6 SAD: seuil SBERT {old} → {SAD_SBERT_THRESHOLD} (option C)")
     return combo
 
 

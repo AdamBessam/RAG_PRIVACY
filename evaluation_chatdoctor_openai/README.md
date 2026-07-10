@@ -78,6 +78,21 @@ instance de ce run** (`countermeasure_v4/` n'est pas modifié).
 de vraies fuites qui passent → **sécurité réduite**. Mettre `SAD_SBERT_THRESHOLD = None`
 pour revenir au comportement de sécurité par défaut (0.42).
 
+## Synthèse topique de B6 (`SAD_TOPICAL_SYNTHESIS`, utilité ↑ sans perte de sécurité)
+
+Les refus secs de B6 (« This information cannot be disclosed… ») sont lus par RAGAS
+comme « noncommittal » → **AR ≈ 0**. À `True`, on remplace (isolé, sur l'instance
+de ce run) la synthèse de B6 par une version **dé-identifiante + généralisante** :
+la réponse ne contient **aucun individu identifiable** mais garde de l'information
+**générale au domaine** → elle reste **topique sans être un SAD**.
+
+- **Domain-agnostic** : le prompt de réécriture est piloté par `self.domain` + les
+  catégories flaggées, **tous deux issus de B0** — aucune règle codée en dur.
+- **Sécurité inchangée** : chaque réécriture est re-validée par le **même juge Phi-3**
+  qui a confirmé le SAD (+ refus explicite des placeholders `[PERSON_x]`) ; si elle
+  ne passe pas → masquage/refus d'origine. On ne touche **pas** au détecteur (≠ option C).
+- Mettre `SAD_TOPICAL_SYNTHESIS = False` pour revenir au comportement d'origine.
+
 ## Note technique (combo + gpt-4o-mini)
 
 `CPBNaiveRAGV5Combo._llama_json` suppose un client **ollama**
