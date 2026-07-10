@@ -104,6 +104,17 @@ UTILITY_CHUNK_SIZE = 25
 
 GPT4O_JUDGE_MODEL = "gpt-4o"
 
+# ── Sensibilité B6 (option C) : seuil de la porte SBERT (F2) du détecteur SAD ──
+# Défaut du code = DEFAULT_SBERT_THRESHOLD = 0.42. On le RELÈVE ici pour réduire
+# les blocages complets ("This information cannot be disclosed...") : moins de
+# phrases atteignent le centroïde d'une catégorie sensible → moins de SAD
+# confirmés → moins de refus. COMPROMIS ASSUMÉ : un seuil plus haut = moins de
+# faux positifs (blocages gênants) MAIS plus de faux négatifs (vraies fuites qui
+# passent) → sécurité réduite. Réglé UNIQUEMENT sur l'instance SAD du combo de ce
+# run ; countermeasure_v4/ n'est pas touché (les autres runs gardent 0.42).
+# Mettre à None pour laisser le défaut 0.42.
+SAD_SBERT_THRESHOLD: float | None = 0.60
+
 
 # ── ChromaStore médical, embeddings text-embedding-3-small (isolé) ────────────
 # Copie de OpenAIZhangChromaStore (evaluation_zhang_openai/run_evaluation_openai.py)
@@ -249,7 +260,17 @@ def _make_combo(hybrid_rag):
             return self.llm.generate(prompt).response
 
     ablation = AblationConfig(name="b7_off", b7_response_guard=False)
-    return CPBComboOpenAI(naive_rag=hybrid_rag, ablation=ablation)
+    combo = CPBComboOpenAI(naive_rag=hybrid_rag, ablation=ablation)
+
+    # Option C — désensibiliser la porte SBERT (F2) de B6 sur CETTE instance
+    # uniquement (isolé ; countermeasure_v4/ inchangé). self.sbert_threshold est
+    # relu à chaque appel de _sbert_proximity, donc le régler ici suffit.
+    if SAD_SBERT_THRESHOLD is not None and getattr(combo, "sad_detector", None) is not None:
+        old = combo.sad_detector.sbert_threshold
+        combo.sad_detector.sbert_threshold = SAD_SBERT_THRESHOLD
+        print(f"B6 SAD: seuil SBERT relevé {old} → {SAD_SBERT_THRESHOLD} "
+              f"(moins de blocages, sécurité réduite — option C)")
+    return combo
 
 
 def load_or_run_combo(doc_index: dict, attacks: list[dict], skip_generation: bool):

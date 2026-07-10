@@ -66,6 +66,18 @@ Tout est **isolé**, rien d'existant n'est écrasé :
 Rollback = supprimer ce dossier + `data/chatdoctor_eval_openai_combo_b7off/`
 + `data/chroma_chatdoctor_openai/`. `countermeasure_v5/` n'est pas modifié.
 
+## Sensibilité B6 (option C — seuil SBERT)
+
+Les blocages complets (« This information cannot be disclosed as it contains
+multiple sensitive personal attributes. ») viennent du **bloc B6 (détecteur SAD)**,
+pas de B7. Pour en réduire le nombre, la constante `SAD_SBERT_THRESHOLD` (défaut
+`0.60`, vs `0.42` dans le code) **relève la porte SBERT (F2)** de B6, **sur la seule
+instance de ce run** (`countermeasure_v4/` n'est pas modifié).
+
+⚠️ **Compromis assumé** : seuil plus haut = moins de blocages gênants **mais** plus
+de vraies fuites qui passent → **sécurité réduite**. Mettre `SAD_SBERT_THRESHOLD = None`
+pour revenir au comportement de sécurité par défaut (0.42).
+
 ## Note technique (combo + gpt-4o-mini)
 
 `CPBNaiveRAGV5Combo._llama_json` suppose un client **ollama**
