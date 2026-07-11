@@ -79,7 +79,7 @@ sys.path.insert(0, str(ROOT / "evaluation_zhang"))         # metric_lo / metric_
 sys.path.insert(0, str(ROOT / "evaluation_zhang_openai"))  # openai_embedder.OpenAIEmbedder
 sys.path.insert(0, str(ROOT / "evaluation_chatdoctor"))    # PI médicale + refs + checkpointing
 
-from config import LLAMA_MODEL, MLFLOW_TRACKING_URI, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
+from config import LLAMA_MODEL, MLFLOW_TRACKING_URI, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, TOP_K
 
 # ── Chemins ──────────────────────────────────────────────────────────────────
 SHARED_DATA_DIR   = ROOT / "data" / "chatdoctor_eval"                       # doc_index + attaques + caches médicaux partagés
@@ -145,6 +145,17 @@ SAD_TOPICAL_SYNTHESIS: bool = True
 # système (le modèle de B6 en fait partie) → à documenter comme telle.
 # Mettre à None pour garder phi3:mini. countermeasure_v4/ n'est pas modifié.
 SAD_JUDGE_MODEL: str | None = LLAMA_MODEL   # "llama3.1:8b"
+
+# ── MODE DE TEST : masquage APRÈS génération (isolé, à retirer facilement) ─────
+# Idée à tester : au lieu de masquer les CHUNKS avant le LLM (B3/B4 sur le
+# contexte), on donne au LLM les chunks BRUTS (meilleure réponse), puis on masque
+# la RÉPONSE avec Presidio (analyzer + anonymizer). Court-circuite le flux normal
+# (retrieve→mask→generate→B6) : ici retrieve→generate(brut)→Presidio sur la sortie.
+# B1/B2/B3/B4-sur-chunks et B6 sont CONTOURNÉS dans ce mode (test pur du placement
+# du masquage). Mettre à False pour revenir au pipeline combo normal.
+# NB : Presidio masque noms/dates/lieux/ID (→ [PERSON_1]...), PAS le contenu libre
+# comme un diagnostic → attends-toi à une utilité haute mais une fuite d'attribut.
+POST_GEN_MASKING: bool = True
 
 
 # ── ChromaStore médical, embeddings text-embedding-3-small (isolé) ────────────
@@ -290,8 +301,47 @@ def _make_combo(hybrid_rag):
             # _parse_json extrait ensuite le premier objet {...} de la sortie.
             return self.llm.generate(prompt).response
 
+        def run(self, query: str, top_k: int = TOP_K) -> dict:
+            # Mode NORMAL : pipeline combo complet (retrieve→mask chunks→gen→B6).
+            if not POST_GEN_MASKING:
+                return super().run(query, top_k=top_k)
+
+            # Mode TEST — masquage APRÈS génération :
+            #   1. le LLM reçoit les chunks BRUTS (aucun masquage du contexte)
+            #   2. on masque la RÉPONSE avec Presidio (B3 analyzer + B4 anonymizer)
+            # B1/B2/B6 sont contournés (test pur du placement du masquage).
+            raw_chunks = self.naive_rag.retrieve(query, top_k=top_k)
+            llm_response = self.naive_rag.generate(query, raw_chunks)
+            raw_text = llm_response.response
+
+            pii = self.pii_analyzer.analyze(raw_text)
+            if pii.findings:
+                masked_text, n_repl = self.pii_anonymizer.anonymize_text(raw_text, pii.findings)
+            else:
+                masked_text, n_repl = raw_text, 0
+
+            return {
+                "query":                      query,
+                "chunks":                     raw_chunks,
+                "raw_chunks":                 raw_chunks,
+                "response":                   masked_text,
+                "response_before_masking":    raw_text,
+                "architecture":               "cpb_combo_post_gen_masking_test",
+                "llm":                        self.llm.name,
+                "cpb_post_gen_masked":        True,
+                "cpb_post_gen_n_replacements": n_repl,
+                "cpb_post_gen_pii_score":     pii.score,
+            }
+
     ablation = AblationConfig(name="b7_off", b7_response_guard=False)
     combo = CPBComboOpenAI(naive_rag=hybrid_rag, ablation=ablation)
+
+    # Mode test "masquage après génération" : B6 est contourné (run() override) →
+    # inutile de bricoler son détecteur, on rend le combo tel quel.
+    if POST_GEN_MASKING:
+        print("MODE TEST — masquage APRÈS génération : chunks BRUTS → LLM, puis "
+              "Presidio sur la RÉPONSE (B1/B2/B4-chunks/B6 contournés).")
+        return combo
 
     # ── Synthèse topique de B6 (isolé) : remplace le détecteur SAD par une
     # sous-classe dont la synthèse dé-identifie + généralise au lieu de tout
