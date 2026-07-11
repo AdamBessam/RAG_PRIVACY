@@ -398,13 +398,54 @@ def _make_combo(hybrid_rag):
                         "reasoning": f"judge unavailable ({exc}), defaulting to SBERT signal",
                     }
 
+            def _verify_rewrite_safe(self, rewritten, categories):
+                """Vérifie la RÉÉCRITURE EN ISOLEMENT — sans lui re-fournir la
+                requête/le contexte (qui contiennent l'individu du cas). Le juge
+                d'origine, query-aware, rattache toute réponse topique au patient
+                du cas → il condamne d'avance la synthèse (0 conversion observée).
+                Ici on demande seulement : ce TEXTE, à lui seul, nomme-t-il un
+                individu précis ET lui attache-t-il un attribut sensible ? Une
+                réponse générique non identifiante passe. Sécurité : on valide que
+                le texte CORRIGÉ est sûr en soi (+ refus des placeholders en amont).
+                Renvoie {'sad_detected': bool}."""
+                categories_str = ", ".join(categories)
+                prompt = (
+                    "You check whether a text is safe to release under privacy rules.\n"
+                    "Look ONLY at the text below, in isolation. Do NOT assume or invent "
+                    "any external individual or case.\n"
+                    "Answer sad_detected=true ONLY if the text ITSELF names or points to a "
+                    "SPECIFIC identifiable individual — a personal name, or an anonymized "
+                    "placeholder like [PERSON_1] — AND attaches one of these sensitive "
+                    f"attributes to that specific individual: {categories_str}.\n"
+                    "If the text only states GENERAL, non-identifying information that is "
+                    "not tied to any specific person, answer sad_detected=false.\n\n"
+                    f"Text:\n{rewritten}\n\n"
+                    'Answer in valid JSON only: {"sad_detected": true or false, '
+                    '"reasoning": "one sentence"}'
+                )
+                try:
+                    import json as _json
+                    import requests
+                    resp = requests.post(
+                        f"{self.ollama_host}/api/generate",
+                        json={"model": self.phi3_model, "prompt": prompt, "stream": False,
+                              "format": "json", "options": {"temperature": 0}},
+                        timeout=120,
+                    )
+                    raw = resp.json().get("response", "") or "{}"
+                    parsed = _json.loads(raw[raw.find("{"): raw.rfind("}") + 1] or "{}")
+                    return {"sad_detected": bool(parsed.get("sad_detected", True))}
+                except Exception:
+                    # fail-safe : en cas de doute, on considère la réécriture non sûre.
+                    return {"sad_detected": True}
+
             def _apply_decision(self, query, chunks, response, categories, confidence,
                                 reasoning, max_similarity, category_scores, reask_callback):
                 # 1. Synthèse topique dé-identifiée, acceptée si (pas de placeholder)
                 #    ET (Phi-3 confirme qu'elle ne lie plus d'individu à un attribut).
                 rewritten = self._synthesize_response(response, categories)
                 if rewritten and not _PLACEHOLDER_RE.search(rewritten):
-                    verify = self._phi3_judge(query, chunks, rewritten, categories)
+                    verify = self._verify_rewrite_safe(rewritten, categories)
                     if not verify["sad_detected"]:
                         return SADResult(
                             sad_detected=True,
