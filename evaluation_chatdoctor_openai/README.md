@@ -70,13 +70,14 @@ Rollback = supprimer ce dossier + `data/chatdoctor_eval_openai_combo_b7off/`
 
 Les blocages complets (« This information cannot be disclosed as it contains
 multiple sensitive personal attributes. ») viennent du **bloc B6 (détecteur SAD)**,
-pas de B7. Pour en réduire le nombre, la constante `SAD_SBERT_THRESHOLD` (défaut
-`0.50`, vs `0.42` dans le code) **relève la porte SBERT (F2)** de B6, **sur la seule
+pas de B7. Pour en réduire le nombre, la constante `SAD_SBERT_THRESHOLD` (défaut **`None` → 0.42**, détection fine)
+peut **relever la porte SBERT (F2)** de B6, **sur la seule
 instance de ce run** (`countermeasure_v4/` n'est pas modifié).
 
 ⚠️ **Compromis assumé** : seuil plus haut = moins de blocages gênants **mais** plus
-de vraies fuites qui passent → **sécurité réduite**. Mettre `SAD_SBERT_THRESHOLD = None`
-pour revenir au comportement de sécurité par défaut (0.42).
+de vraies fuites qui passent → **sécurité réduite**. Par défaut on garde `None` (0.42) :
+on réduit les blocks en **convertissant** ce que B6 attrape (synthèse topique), pas en
+l'aveuglant. Les appels B6 (juge + synthèse) tournent en **température 0** (reproductible).
 
 ## Synthèse topique de B6 (`SAD_TOPICAL_SYNTHESIS`, utilité ↑ sans perte de sécurité)
 
