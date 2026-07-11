@@ -93,6 +93,15 @@ la réponse ne contient **aucun individu identifiable** mais garde de l'informat
   ne passe pas → masquage/refus d'origine. On ne touche **pas** au détecteur (≠ option C).
 - Mettre `SAD_TOPICAL_SYNTHESIS = False` pour revenir au comportement d'origine.
 
+## Modèle de B6 (`SAD_JUDGE_MODEL`)
+
+B6 (juge SAD F3 + re-vérification + synthèse) utilise `phi3:mini` par défaut (3,8B,
+faible). `SAD_JUDGE_MODEL` le remplace, **sur l'instance de ce run**, par un modèle
+plus fort déjà présent en local (défaut `llama3.1:8b`, même endpoint ollama, gratuit).
+Effet attendu : juge plus fiable + **synthèse topique de meilleure qualité** (plus de
+blocks convertis → AR/SS ↑). C'est une **variante** du système (le modèle de B6 en fait
+partie) → à documenter comme telle. `None` = garder `phi3:mini`. `countermeasure_v4/` intact.
+
 ## Note technique (combo + gpt-4o-mini)
 
 `CPBNaiveRAGV5Combo._llama_json` suppose un client **ollama**

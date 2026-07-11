@@ -79,7 +79,7 @@ sys.path.insert(0, str(ROOT / "evaluation_zhang"))         # metric_lo / metric_
 sys.path.insert(0, str(ROOT / "evaluation_zhang_openai"))  # openai_embedder.OpenAIEmbedder
 sys.path.insert(0, str(ROOT / "evaluation_chatdoctor"))    # PI médicale + refs + checkpointing
 
-from config import MLFLOW_TRACKING_URI, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
+from config import LLAMA_MODEL, MLFLOW_TRACKING_URI, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
 
 # ── Chemins ──────────────────────────────────────────────────────────────────
 SHARED_DATA_DIR   = ROOT / "data" / "chatdoctor_eval"                       # doc_index + attaques + caches médicaux partagés
@@ -129,6 +129,18 @@ SAD_SBERT_THRESHOLD: float | None = 0.50
 # passe pas, on retombe sur le masquage/refus d'origine. On ne touche PAS au
 # détecteur (contrairement à l'option C) — seulement la FORME de la sortie.
 SAD_TOPICAL_SYNTHESIS: bool = True
+
+# ── Modèle de B6 (juge SAD F3 + re-vérification + synthèse) ───────────────────
+# B6 utilise phi3:mini par défaut (3,8B → décisions bruitées ET réécritures
+# faibles, alors qu'il sert aux trois). On le remplace ici, sur l'instance de ce
+# run, par un modèle plus fort DÉJÀ présent en local (llama3.1:8b, même endpoint
+# ollama, gratuit, aussi utilisé par B0). Affecte À LA FOIS _phi3_judge et
+# _synthesize_response, qui lisent tous deux self.phi3_model.
+# Effet attendu : juge plus fiable (AE plus juste) + synthèse topique de bien
+# meilleure qualité (plus de blocks convertis → AR/SS ↑). C'est une VARIANTE du
+# système (le modèle de B6 en fait partie) → à documenter comme telle.
+# Mettre à None pour garder phi3:mini. countermeasure_v4/ n'est pas modifié.
+SAD_JUDGE_MODEL: str | None = LLAMA_MODEL   # "llama3.1:8b"
 
 
 # ── ChromaStore médical, embeddings text-embedding-3-small (isolé) ────────────
@@ -369,6 +381,13 @@ def _make_combo(hybrid_rag):
         )
         print(f"B6 SAD: synthèse topique dé-identifiante activée (domaine={br.domain}) "
               f"— sécurité via juge Phi-3, countermeasure_v4/ intact")
+
+    # ── Modèle de B6 (juge + synthèse) — appliqué au détecteur ACTIF. Isolé ;
+    # self.phi3_model est relu à chaque appel, donc le régler sur l'instance suffit.
+    if SAD_JUDGE_MODEL is not None and getattr(combo, "sad_detector", None) is not None:
+        old = combo.sad_detector.phi3_model
+        combo.sad_detector.phi3_model = SAD_JUDGE_MODEL
+        print(f"B6 SAD: modèle juge+synthèse {old} → {SAD_JUDGE_MODEL}")
 
     # ── Option C — seuil SBERT (F2) de B6, appliqué au détecteur ACTIF (topical
     # ou d'origine). Isolé ; countermeasure_v4/ inchangé. Relu à chaque appel de
