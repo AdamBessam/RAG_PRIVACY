@@ -675,6 +675,9 @@ def main():
     parser.add_argument("--compare", action="store_true",
                         help="Compare POST-GEN (masquage après) vs COMBO (masquage avant) sur les "
                              "MÊMES questions/B0 → effet du placement du masquage.")
+    parser.add_argument("--pre-gen-only", action="store_true",
+                        help="Lance SEULEMENT la variante COMBO (masquage AVANT génération). "
+                             "Sorties dédiées *_pregen.json → n'écrase pas le run post-gen.")
     parser.add_argument("--dataset", default="cedh", choices=list(DATASETS),
                         help="Dataset à évaluer (défaut cedh). Détermine config/store/métrique PII.")
     parser.add_argument("--gpu-index", type=int, default=0,
@@ -790,18 +793,30 @@ def main():
         print(f"  décision B0            → {paths['bootstrap']}")
         return
 
-    # ── Mode simple : POST-GEN seul ──────────────────────────────────────────
-    print("\n3. Scoring par type de question — variante: POST-GEN (masquage après génération)\n")
-    rows, all_records = score_all(run_post_gen, cpb, groups, embedder, ds)
-    print_metrics_table(rows, note=f"{args.dataset}, POST-GEN, retrieval={retr}")
-    print_perf_table(rows, note="POST-GEN — temps de réponse & ressources")
+    # ── Choix de la variante à lancer (mode simple) ───────────────────────────
+    if args.pre_gen_only:
+        runner, variante = run_combo, "pre_gen_masking"     # masquage AVANT génération
+        note = "COMBO (masquage AVANT génération)"
+        suffix = "_pregen"                                   # sorties DÉDIÉES, pas d'écrasement
+    else:
+        runner, variante = run_post_gen, "post_gen_masking"  # masquage APRÈS génération
+        note = "POST-GEN (masquage APRÈS génération)"
+        suffix = ""
 
-    with open(paths["results"], "w", encoding="utf-8") as f:
+    print(f"\n3. Scoring par type de question — variante: {note}\n")
+    rows, all_records = score_all(runner, cpb, groups, embedder, ds)
+    print_metrics_table(rows, note=f"{args.dataset}, {variante}, retrieval={retr}")
+    print_perf_table(rows, note=f"{note} — temps de réponse & ressources")
+
+    results_path = out_dir / f"results{suffix}.json"
+    responses_path = out_dir / f"responses{suffix}.json"
+
+    with open(results_path, "w", encoding="utf-8") as f:
         json.dump({
             "dataset": args.dataset,
             "pii_mode": ds["pii_mode"],
             "per_type": args.per_type,
-            "variante": "post_gen_masking",
+            "variante": variante,
             "retrieval": retr,
             "bootstrap_b0": bootstrap_dump,
             "by_query_type": rows,
@@ -809,19 +824,19 @@ def main():
         }, f, ensure_ascii=False, indent=2)
     with open(paths["bootstrap"], "w", encoding="utf-8") as f:
         json.dump(bootstrap_dump, f, ensure_ascii=False, indent=2)
-    with open(paths["responses"], "w", encoding="utf-8") as f:
+    with open(responses_path, "w", encoding="utf-8") as f:
         json.dump({
             "dataset": args.dataset,
             "per_type": args.per_type,
-            "variante": "post_gen_masking",
+            "variante": variante,
             "bootstrap_b0": bootstrap_dump,
             "responses": all_records,
         }, f, ensure_ascii=False, indent=2)
 
     print("\nSauvegardé :")
-    print(f"  métriques par type → {paths['results']}")
+    print(f"  métriques par type → {results_path}")
     print(f"  décision B0        → {paths['bootstrap']}")
-    print(f"  réponses générées  → {paths['responses']}  ({len(all_records)} réponses)")
+    print(f"  réponses générées  → {responses_path}  ({len(all_records)} réponses)")
 
 
 if __name__ == "__main__":
