@@ -6,12 +6,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import streamlit as st
 
 from config import TOP_K
-from countermeasure.cpb_naive_rag import CPBNaiveRAG
 from countermeasure.sad_detector import DEFAULT_SBERT_THRESHOLD
+from countermeasure_v5.cpb_naive_rag_v5_combo import CPBNaiveRAGV5Combo
 from llms.llama_llm import LlamaLLM
 from metrics.pii_leakage import compute_pii_leakage
 from metrics.response_quality import compute_response_quality
-from rag.naive_rag import NaiveRAG
+from rag.hybrid_rag import HybridRAG
 from vectorstore.chroma_store import ChromaStore
 
 st.set_page_config(page_title="CPB Privacy Shield", layout="wide", page_icon="🔒")
@@ -20,15 +20,62 @@ st.title("CPB Privacy Shield")
 st.caption("RAG system with Contextual Privacy Budget countermeasure")
 
 
-@st.cache_resource(show_spinner="Loading CPB system (first time only)...")
+@st.cache_resource(show_spinner="Loading CPB v5 system (first time only)...")
 def load_system():
     store = ChromaStore()
     llm = LlamaLLM()
-    cpb_rag = CPBNaiveRAG(naive_rag=NaiveRAG(store=store, llm=llm))
+    # Retrieval hybride dense (ChromaDB cosinus) + BM25, fusion RRF — comme le
+    # runner run_metrics_by_query_type_cedh.py. dedup=False → config nodedup
+    # (plusieurs chunks par doc).
+    hybrid = HybridRAG(store=store, llm=llm, dedup=False)
+    cpb_rag = CPBNaiveRAGV5Combo(naive_rag=hybrid)
     return cpb_rag
 
 
+def sanitize_chunks(chunks):
+    """Les hits BM25 de HybridRAG ont similarity_score=None → max() plante dans
+    compute_response_quality / compute_pii_leakage. On remplace None par le
+    rrf_score (ou 0.0) sur une COPIE, sans muter les chunks d'origine."""
+    safe = []
+    for c in chunks or []:
+        if not isinstance(c, dict):
+            continue
+        cc = dict(c)
+        if cc.get("similarity_score") is None:
+            cc["similarity_score"] = float(cc.get("rrf_score") or 0.0)
+        safe.append(cc)
+    return safe
+
+
 cpb_rag = load_system()
+
+# ── BLOC B0 — Domaine + combinaisons risquées (LLM, calculé une fois) ───────────
+domain = getattr(cpb_rag.bootstrap_result, "domain", "?")
+risky_combos = getattr(cpb_rag, "risky_combos", [])
+
+st.subheader("BLOC B0 · Combinaisons de données sensibles ré-identifiantes")
+st.markdown(
+    f"**Domaine détecté :** `{domain}` &nbsp;—&nbsp; "
+    f"**{len(risky_combos)} combinaison(s)** générée(s) par le LLM pour ce corpus."
+)
+if risky_combos:
+    st.caption(
+        "Une entité seule est souvent inoffensive ; c'est l'ASSEMBLAGE de ces types "
+        "dans un même passage qui ré-identifie une personne. CPB v5 masque tous les "
+        "membres d'une combinaison dès qu'ils sont tous présents dans un chunk."
+    )
+    for i, combo in enumerate(risky_combos, 1):
+        members = sorted(combo)
+        if len(members) == 1:
+            st.markdown(f"**{i}.** `{members[0]}` &nbsp;(identifiant fort — masqué seul)")
+        else:
+            st.markdown(f"**{i}.** " + " + ".join(f"`{t}`" for t in members))
+else:
+    st.warning(
+        "Aucune combinaison générée (LLM off ou échec) → repli sur le masquage v5 standard."
+    )
+
+st.divider()
 
 # ── Query input ────────────────────────────────────────────────────────────────
 with st.form("query_form"):
@@ -43,13 +90,16 @@ if not submitted or not query.strip():
 with st.spinner("Processing query through CPB pipeline..."):
     result = cpb_rag.run(query.strip(), top_k=top_k)
 
-pii = compute_pii_leakage(response=result["response"], chunks=result["raw_chunks"], query=query.strip())
+# HybridRAG : neutralise similarity_score=None (hits BM25) avant les métriques.
+metric_chunks = sanitize_chunks(result["raw_chunks"])
+
+pii = compute_pii_leakage(response=result["response"], chunks=metric_chunks, query=query.strip())
 
 with st.spinner("Computing response quality metrics..."):
     quality = compute_response_quality(
         query=query.strip(),
         response=result["response"],
-        chunks=result["raw_chunks"],
+        chunks=metric_chunks,
         embedder=cpb_rag.store.embedder,
     )
 

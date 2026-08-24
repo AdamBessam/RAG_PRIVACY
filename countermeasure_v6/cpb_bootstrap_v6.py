@@ -17,6 +17,7 @@ Exécuté UNE SEULE FOIS à l'instanciation de CPBNaiveRAGV6.
 import json
 import logging
 import os
+import random
 import re
 import sys
 import tempfile
@@ -33,7 +34,7 @@ from config import LLAMA_MODEL, OLLAMA_BASE_URL
 logger = logging.getLogger(__name__)
 
 NVIDIA_MODEL_ID = "nvidia/domain-classifier"
-NVIDIA_SAMPLE_SIZE = 30
+NVIDIA_SAMPLE_SIZE = 10
 NVIDIA_MAX_CHARS = 2000
 
 SEMANTIC_RELEVANCE_FLOOR = 0.40
@@ -174,8 +175,7 @@ class CPBBootstrapV6:
         try:
             from presidio_analyzer import AnalyzerEngine
             analyzer = AnalyzerEngine()
-            result = self.store.collection.get(limit=50, include=["documents"])
-            docs = result.get("documents") or []
+            docs = self._sample_chunks(60)
             types: set[str] = set()
             for doc in docs:
                 if not doc:
@@ -469,7 +469,13 @@ class CPBBootstrapV6:
 
     def _sample_chunks(self, n: int) -> list[str]:
         try:
-            result = self.store.collection.get(limit=n, include=["documents"])
+            total = self.store.collection.count()
+            if total <= n:
+                result = self.store.collection.get(limit=total, include=["documents"])
+                return [d for d in (result.get("documents") or []) if d and d.strip()]
+            all_ids = self.store.collection.get(include=[])["ids"]
+            sample_ids = random.Random(self.seed).sample(all_ids, n)
+            result = self.store.collection.get(ids=sample_ids, include=["documents"])
             return [d for d in (result.get("documents") or []) if d and d.strip()]
         except Exception:
             return []
