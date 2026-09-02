@@ -155,6 +155,7 @@ test_contre_mesure_ildpiltest/*
 # wrapper, sans lien avec les anciennes versions de la contre-mesure).
 !test_contre_mesure_ildpiltest/config.py
 !test_contre_mesure_ildpiltest/_store.py
+!test_contre_mesure_ildpiltest/03_run_naive_leakage.py
 benchmark_asq_phi/
 benchmark_financial/
 benchmark_naive_vs_cpb/
