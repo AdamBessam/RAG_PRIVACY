@@ -1,8 +1,0 @@
-artifact_location: file:///C:/Users/bessa/Documents/RAG_Privacy_code/benchmark_naive_vs_cpb/mlruns/790831564385450087
-creation_time: 1779756823567
-experiment_id: '790831564385450087'
-last_update_time: 1779756823567
-lifecycle_stage: active
-name: naive_instruction_vs_cpb
-trace_location: null
-workspace: default

@@ -140,3 +140,44 @@ data/chroma_chatdoctor_claims/
 *.flag
 *.db
 *.npy
+
+# Anciennes versions de la contre-mesure et bancs de test internes —
+# gardés en local uniquement, non publiés (seul countermeasure_v6/ l'est).
+countermeasure/
+countermeasure_v3/
+countermeasure_v4/
+countermeasure_v5/
+contre_mesure_nv/
+test_contre_mesure/
+test_contre_mesure_ildpiltest/*
+# ... sauf config.py et _store.py : dépendances réelles de
+# evaluation_cedh_ablation/run_ablation_cumulative_v6.py (dataset + ChromaDB
+# wrapper, sans lien avec les anciennes versions de la contre-mesure).
+!test_contre_mesure_ildpiltest/config.py
+!test_contre_mesure_ildpiltest/_store.py
+benchmark_asq_phi/
+benchmark_financial/
+benchmark_naive_vs_cpb/
+evaluation_chatdoctor/
+evaluation_chatdoctor_openai/
+evaluation_zhang/
+evaluation_zhang_ablation/
+evaluation_zhang_openai/
+interface/
+sage/
+sage_reference/
+_inspect_dataset.py
+_inspect_entities.py
+app.py
+debug_sensitivity.py
+delete.py
+healthcaremagic_export.npz
+mlruns_view.db
+test_gliner_fix.py
+test_nvidia_domain_classifier.py
+
+# evaluation_cedh_ablation/ : seule l'étude v6 est publiée, pas les scripts
+# et résultats de l'ancienne étude v4.
+evaluation_cedh_ablation/run_ablation.py
+evaluation_cedh_ablation/run_ablation_cumulative_reverse.py
+evaluation_cedh_ablation/cumulative_results_reverse_hybrid/
