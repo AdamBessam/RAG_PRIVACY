@@ -273,6 +273,7 @@ def run_cpb_v6(queries: list[dict], ablation, variant_dir: Path) -> tuple[list[s
             retriever = NaiveRAG(store=store, llm=llm)
         cpb = CPBNaiveRAGV6(naive_rag=retriever, ablation=ablation)
 
+        n_errors = 0
         with open(checkpoint_path, "a", encoding="utf-8") as ckpt_f:
             for i, q in enumerate(remaining):
                 print(f"  CPB v6 [{ablation.name}] [{len(done) + i + 1}/{len(queries)}] {q['global_id']}...", end="\r")
@@ -280,14 +281,22 @@ def run_cpb_v6(queries: list[dict], ablation, variant_dir: Path) -> tuple[list[s
                     result = cpb.run(get_query_text(q), top_k=TOP_K)
                     response = result["response"]
                     raw_chunks = result.get("raw_chunks", [])
-                except Exception as exc:
-                    response = f"ERROR: {exc}"
+                except Exception:
+                    import traceback
+                    n_errors += 1
+                    print(f"\n  [{ablation.name}] EXCEPTION on {q['global_id']}:")
+                    traceback.print_exc()
+                    response = f"ERROR: {traceback.format_exc(limit=1).strip().splitlines()[-1]}"
                     raw_chunks = []
                 row = {"global_id": q["global_id"], "response": response, "raw_chunks": raw_chunks}
                 done[q["global_id"]] = row
                 ckpt_f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 ckpt_f.flush()
         print()
+        if n_errors:
+            print(f"  WARNING [{ablation.name}]: {n_errors}/{len(remaining)} queries raised an "
+                  f"exception (response='ERROR: ...', raw_chunks=[] -> these contribute 0 to "
+                  f"both PII numerator and denominator). See tracebacks above.")
 
     responses = [done[q["global_id"]]["response"] for q in queries]
     raw_chunks_per_query = [done[q["global_id"]]["raw_chunks"] for q in queries]
@@ -358,6 +367,14 @@ def generate_and_score(ablation, queries: list[dict], skip_generation: bool) -> 
     variant_dir.mkdir(parents=True, exist_ok=True)
 
     responses, raw_chunks_per_query, embedder = load_or_run_cpb(queries, ablation, variant_dir, skip_generation)
+
+    n_error_responses = sum(1 for r in responses if isinstance(r, str) and r.startswith("ERROR:"))
+    n_empty_chunks = sum(1 for c in raw_chunks_per_query if not c)
+    if n_error_responses or n_empty_chunks:
+        print(f"  WARNING [{ablation.name}]: {n_error_responses}/{len(responses)} responses are "
+              f"'ERROR: ...' and {n_empty_chunks}/{len(raw_chunks_per_query)} queries have empty "
+              f"raw_chunks -- these force PII numerator AND denominator to 0, which can make the "
+              f"aggregate PII rate look artificially low/zero.")
 
     # HybridRAG leaves similarity_score=None on BM25-only chunks (no dense score).
     # The metrics pick the "best chunk" via max(..., key=similarity_score), which
