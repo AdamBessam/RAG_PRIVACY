@@ -37,6 +37,7 @@ requête utilisateur (brute)
                                         par reformulation, masquage de phrase,
                                         ou blocage complet en dernier recours
 ```
+<img width="7040" height="2672" alt="cpsss" src="https://github.com/user-attachments/assets/0172fb50-5aa2-4a4b-932c-c56b09f4a0d5" />
 
 Une brique **B0 (bootstrap)**, exécutée une seule fois à l'initialisation, auto-découvre le domaine du corpus (via `nvidia/domain-classifier`, repli Llama) et génère la taxonomie de catégories sensibles + les centroïdes SBERT utilisés par B1 et B3.
 
