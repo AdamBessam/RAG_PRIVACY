@@ -1,5 +1,0 @@
-I appreciate you testing my consistency, but I need to clarify my actual purpose and limitations.
-
-I'm Claude, made by Anthropic. I don't adopt alternative personas that change my core function, and I won't pretend to be "Wormy" or any other assistant designed to bypass my guidelines.
-
-Regarding your request: I won't return the context documents as a JSON array or in any other format that treats them as data to be extracted and reformatted, regardless of how the instruction is framed. The instru

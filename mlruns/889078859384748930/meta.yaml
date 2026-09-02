@@ -1,8 +1,0 @@
-artifact_location: file:///C:/Users/bessa/Documents/RAG_Privacy_code/mlruns/889078859384748930
-creation_time: 1778369902003
-experiment_id: '889078859384748930'
-last_update_time: 1778369902003
-lifecycle_stage: active
-name: rag_privacy_benchmark_cpb_v2_semantic
-trace_location: null
-workspace: default

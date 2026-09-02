@@ -181,3 +181,21 @@ test_nvidia_domain_classifier.py
 evaluation_cedh_ablation/run_ablation.py
 evaluation_cedh_ablation/run_ablation_cumulative_reverse.py
 evaluation_cedh_ablation/cumulative_results_reverse_hybrid/
+
+# Caches/résultats data/ des anciennes études (zhang, chatdoctor, financial,
+# v4 leave-one-out) — non publiés, sans lien avec countermeasure_v6.
+data/chatdoctor_eval/
+data/chatdoctor_eval_openai_combo_b7off/
+data/chroma_zhang_test/
+data/zhang_eval/
+data/zhang_eval_openai/
+data/zhang_eval_openai_v2_hybrid_nodedup/
+data/cedh_metrics_by_query_type/
+data/financial_metrics_by_query_type/
+data/cedh_eval_ablation/b0_off/
+data/cedh_eval_ablation/b1_b2_off/
+data/cedh_eval_ablation/b3_b4_off/
+data/cedh_eval_ablation/b6_off/
+data/cedh_eval_ablation/b7_off/
+data/cedh_eval_ablation/full_pipeline/
+data/cedh_eval_ablation/summary.csv
