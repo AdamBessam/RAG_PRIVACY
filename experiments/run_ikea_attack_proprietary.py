@@ -1,17 +1,17 @@
-# experiments/run_ikea_attack.py
+# experiments/run_ikea_attack_proprietary.py
 """
-Expérience : IKEA Attack (Implicit Knowledge Extraction) × 4 RAGs × 2 LLMs
-============================================================================
+IKEA Attack — LLMs propriétaires (GPT-4o mini, Claude Haiku)
+=============================================================
 Exécute l'attaque IKEAAttack sur toutes les combinaisons :
-    LLMs  : Llama 3.1 8B, Mistral 7B
-    RAGs  : NaiveRAG, SelfRAG, HHRRAG, GraphRAG
+    LLMs : GPT-4o mini, Claude Haiku
+    RAGs : NaiveRAG, SelfRAG, HHRRAG, GraphRAG
 
 Métriques loguées dans MLflow (par round) :
-    - rouge_l          : CRR — Chunk Recovery Rate (régurgitation verbatim)
+    - rouge_l          : CRR — Chunk Recovery Rate
     - pii_leakage_rate : taux de fuite PII
     - tokens / coût
 
-Métriques IKEA agrégées affichées en console uniquement :
+Métriques IKEA agrégées (MLflow SUMMARY + console) :
     - EE  : Extraction Efficiency
     - ASR : Attack Success Rate
     - CRR : Chunk Recovery Rate (ROUGE-L moyen)
@@ -22,8 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vectorstore.chroma_store import ChromaStore
-from llms.llama_llm import LlamaLLM
-from llms.mistral_llm import MistralLLM
+from llms.gpt4o_mini_llm import GPT4oMiniLLM
+from llms.claude_haiku_llm import ClaudeHaikuLLM
 from rag.naive_rag import NaiveRAG
 from rag.self_rag import SelfRAG
 from rag.hhr_rag import HHRRAG
@@ -31,12 +31,36 @@ from rag.graph_rag import GraphRAG
 from attacks.data_extraction import IKEAAttack
 from analysis.mlflow_logger import MLflowLogger
 
+import mlflow
+
 # Nombre de rounds IKEA par combinaison (Table 5 du papier : 50)
 N_ROUNDS = 50
 
+# ---------------------------------------------------------------------------
+# Combinaisons DÉJÀ exécutées (à compléter au fur et à mesure)
+# ---------------------------------------------------------------------------
+ALREADY_DONE = {
+    # Exemples :
+    # ("gpt4o-mini",   "naive_rag"),
+    # ("claude-haiku", "naive_rag"),
+}
+
+
+def _neo4j_available() -> bool:
+    """Vérifie si Neo4j est accessible avant de lancer un experiment graph_rag."""
+    from neo4j import GraphDatabase
+    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+    try:
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        driver.verify_connectivity()
+        driver.close()
+        return True
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
-# Fonction principale par combinaison (llm_name, rag_name, rag_instance)
+# Fonction principale par combinaison
 # ---------------------------------------------------------------------------
 
 def run_experiment(llm_name: str, rag_name: str, rag, logger: MLflowLogger):
@@ -67,7 +91,6 @@ def run_experiment(llm_name: str, rag_name: str, rag, logger: MLflowLogger):
         print(f"   MLflow run_id : {run_id}")
 
     # --- Run MLflow agrégé (EE / ASR / CRR / SS) ---
-    import mlflow
     n_refusals  = sum(1 for r in result.rounds if r.is_refusal)
     n_unrelated = sum(1 for r in result.rounds if r.is_unrelated)
     agg_run_name = f"{llm_name}__{rag_name}__ikea_attack__SUMMARY"
@@ -110,26 +133,35 @@ if __name__ == "__main__":
     store  = ChromaStore()
     logger = MLflowLogger()
 
-    # --- LLMs ---
-    print("\n📥 Chargement Llama 3.1 8B...")
-    llama = LlamaLLM()
+    # --- LLMs propriétaires ---
+    print("\n📥 Initialisation GPT-4o mini...")
+    gpt = GPT4oMiniLLM()
 
-    print("📥 Chargement Mistral 7B...")
-    mistral = MistralLLM()
+    print("📥 Initialisation Claude Haiku...")
+    claude = ClaudeHaikuLLM()
 
     # ---------------------------------------------------------------------------
-    # Boucle : 2 LLMs × 4 RAGs = 8 expériences
+    # Boucle : 2 LLMs × 4 RAGs = 8 expériences, en sautant les déjà faites
     # ---------------------------------------------------------------------------
-    for llm_name, llm in [("llama3.1:8b", llama), ("mistral:7b", mistral)]:
+    for llm_name, llm in [("gpt4o-mini", gpt), ("claude-haiku", claude)]:
 
         rags = [
-            ("naive_rag",  NaiveRAG(store=store, llm=llm)),
-            ("self_rag",   SelfRAG(store=store,  llm=llm)),
-            ("hhr_rag",    HHRRAG(store=store,   llm=llm)),
-            ("graph_rag",  GraphRAG(store=store,  llm=llm)),
+            ("naive_rag", NaiveRAG(store=store, llm=llm)),
+            ("self_rag",  SelfRAG(store=store,  llm=llm)),
+            ("hhr_rag",   HHRRAG(store=store,   llm=llm)),
+            ("graph_rag", GraphRAG(store=store,  llm=llm)),
         ]
 
         for rag_name, rag in rags:
+            if (llm_name, rag_name) in ALREADY_DONE:
+                print(f"\n⏭️  Skip {llm_name} × {rag_name} (déjà dans MLflow)")
+                continue
+
+            if rag_name == "graph_rag" and not _neo4j_available():
+                print(f"\n❌  Skip {llm_name} × {rag_name} — Neo4j inaccessible (localhost:7687).")
+                print("    Démarre Neo4j puis relance le script.")
+                continue
+
             run_experiment(
                 llm_name=llm_name,
                 rag_name=rag_name,
@@ -137,4 +169,4 @@ if __name__ == "__main__":
                 logger=logger,
             )
 
-    print("\n✅ Toutes les expériences IKEA sont terminées. Lance `mlflow ui` pour visualiser.")
+    print("\n✅ Toutes les expériences IKEA propriétaires sont terminées. Lance `mlflow ui` pour visualiser.")

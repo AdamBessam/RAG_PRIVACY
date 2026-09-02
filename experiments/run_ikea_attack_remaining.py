@@ -1,17 +1,18 @@
-# experiments/run_ikea_attack.py
+# experiments/run_ikea_attack_remaining.py
 """
-Expérience : IKEA Attack (Implicit Knowledge Extraction) × 4 RAGs × 2 LLMs
-============================================================================
-Exécute l'attaque IKEAAttack sur toutes les combinaisons :
+IKEA Attack — combinaisons RESTANTES (NaiveRAG × Llama déjà dans MLflow)
+=========================================================================
+Exécute l'attaque IKEAAttack sur toutes les combinaisons non encore loguées :
     LLMs  : Llama 3.1 8B, Mistral 7B
-    RAGs  : NaiveRAG, SelfRAG, HHRRAG, GraphRAG
+    RAGs  : NaiveRAG × Mistral, SelfRAG, HHRRAG, GraphRAG × les 2 LLMs
+    (NaiveRAG × Llama déjà exécuté — skippé)
 
 Métriques loguées dans MLflow (par round) :
-    - rouge_l          : CRR — Chunk Recovery Rate (régurgitation verbatim)
+    - rouge_l          : CRR — Chunk Recovery Rate
     - pii_leakage_rate : taux de fuite PII
     - tokens / coût
 
-Métriques IKEA agrégées affichées en console uniquement :
+Métriques IKEA agrégées (MLflow SUMMARY + console) :
     - EE  : Extraction Efficiency
     - ASR : Attack Success Rate
     - CRR : Chunk Recovery Rate (ROUGE-L moyen)
@@ -31,12 +32,41 @@ from rag.graph_rag import GraphRAG
 from attacks.data_extraction import IKEAAttack
 from analysis.mlflow_logger import MLflowLogger
 
+import mlflow
+from neo4j.exceptions import ServiceUnavailable
+
 # Nombre de rounds IKEA par combinaison (Table 5 du papier : 50)
 N_ROUNDS = 50
 
+# ---------------------------------------------------------------------------
+# Combinaisons DÉJÀ exécutées (à ignorer)
+# ---------------------------------------------------------------------------
+ALREADY_DONE = {
+    ("llama3.1:8b", "naive_rag"),
+    ("llama3.1:8b", "self_rag"),
+    ("llama3.1:8b", "hhr_rag"),
+    ("llama3.1:8b", "graph_rag"),
+    ("mistral:7b",  "naive_rag"),
+    ("mistral:7b",  "self_rag"),
+    ("mistral:7b",  "hhr_rag"),
+}
+
+
+def _neo4j_available() -> bool:
+    """Vérifie si Neo4j est accessible avant de lancer un experiment graph_rag."""
+    from neo4j import GraphDatabase
+    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+    try:
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        driver.verify_connectivity()
+        driver.close()
+        return True
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
-# Fonction principale par combinaison (llm_name, rag_name, rag_instance)
+# Fonction principale par combinaison
 # ---------------------------------------------------------------------------
 
 def run_experiment(llm_name: str, rag_name: str, rag, logger: MLflowLogger):
@@ -67,7 +97,6 @@ def run_experiment(llm_name: str, rag_name: str, rag, logger: MLflowLogger):
         print(f"   MLflow run_id : {run_id}")
 
     # --- Run MLflow agrégé (EE / ASR / CRR / SS) ---
-    import mlflow
     n_refusals  = sum(1 for r in result.rounds if r.is_refusal)
     n_unrelated = sum(1 for r in result.rounds if r.is_unrelated)
     agg_run_name = f"{llm_name}__{rag_name}__ikea_attack__SUMMARY"
@@ -118,7 +147,7 @@ if __name__ == "__main__":
     mistral = MistralLLM()
 
     # ---------------------------------------------------------------------------
-    # Boucle : 2 LLMs × 4 RAGs = 8 expériences
+    # Boucle : 2 LLMs × 4 RAGs = 8 expériences, en sautant les déjà faites
     # ---------------------------------------------------------------------------
     for llm_name, llm in [("llama3.1:8b", llama), ("mistral:7b", mistral)]:
 
@@ -130,6 +159,15 @@ if __name__ == "__main__":
         ]
 
         for rag_name, rag in rags:
+            if (llm_name, rag_name) in ALREADY_DONE:
+                print(f"\n⏭️  Skip {llm_name} × {rag_name} (déjà dans MLflow)")
+                continue
+
+            if rag_name == "graph_rag" and not _neo4j_available():
+                print(f"\n❌  Skip {llm_name} × {rag_name} — Neo4j inaccessible (localhost:7687).")
+                print("    Démarre Neo4j puis relance le script.")
+                continue
+
             run_experiment(
                 llm_name=llm_name,
                 rag_name=rag_name,
@@ -137,4 +175,4 @@ if __name__ == "__main__":
                 logger=logger,
             )
 
-    print("\n✅ Toutes les expériences IKEA sont terminées. Lance `mlflow ui` pour visualiser.")
+    print("\n✅ Toutes les expériences IKEA restantes sont terminées. Lance `mlflow ui` pour visualiser.")

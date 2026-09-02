@@ -9,7 +9,7 @@ load_dotenv()
 BASE_DIR            = Path(__file__).parent
 DATA_DIR            = BASE_DIR / "data" / "raw"
 CHROMA_PERSIST_DIR  = str(BASE_DIR / "data" / "chroma_db")
-MLFLOW_TRACKING_URI =  "mlruns"
+MLFLOW_TRACKING_URI = (BASE_DIR / "mlruns").as_uri()  # file:///... pour compatibilité Windows
 QUERIES_PATH        = DATA_DIR / "queries.json"
 NEO4J_URI      = os.getenv("NEO4J_URI")
 NEO4J_USER     = os.getenv("NEO4J_USER")
@@ -27,6 +27,11 @@ SPACY_MODEL   = "en_core_web_sm"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_DIM   = 384
 
+# --- Embedding (variante OpenAI, evaluation_zhang/run_evaluation_openai.py) ---
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBEDDING_DIM   = 1536
+OPENAI_EMBEDDING_PRICE_PER_TOKEN = 0.00000002  # $0.02 / 1M tokens
+
 # --- ChromaDB ---
 CHROMA_COLLECTION_NAME = "rag_benchmark"
 
@@ -42,7 +47,7 @@ MISTRAL_MODEL   = "mistral:7b"
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 GPT4O_MINI_MODEL   = "gpt-4o-mini"
-CLAUDE_HAIKU_MODEL = "claude-3-5-haiku-20241022"
+CLAUDE_HAIKU_MODEL = "claude-haiku-4-5"
 
 # --- Génération LLM ---
 MAX_TOKENS  = 256
@@ -55,8 +60,8 @@ TOKEN_PRICES = {
         "output": 0.00000060,
     },
     "claude-haiku": {
-        "input":  0.00000025,
-        "output": 0.00000125,
+        "input":  0.00000080,
+        "output": 0.00000400,
     },
     "llama3.1:8b": {
         "input":  0.0,

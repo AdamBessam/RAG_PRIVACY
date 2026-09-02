@@ -231,6 +231,28 @@ class IKEAAttack:
         self.unrelated_set:   list[tuple[str, str]]  = []  # Hu
 
     # ------------------------------------------------------------------
+    # Normalisation de la sortie retrieve()
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_chunks(retrieval_output) -> list[dict]:
+        """
+        Normalise la sortie de rag.retrieve() en list[dict].
+
+        - NaiveRAG  → retourne directement list[dict]
+        - SelfRAG / HHRRAG / GraphRAG → retournent dict{"chunks": list[dict], ...}
+
+        Aucun fichier RAG n'est modifié.
+        """
+        if isinstance(retrieval_output, list):
+            return [c for c in retrieval_output if isinstance(c, dict)]
+        if isinstance(retrieval_output, dict):
+            chunks = retrieval_output.get("chunks", [])
+            if isinstance(chunks, list):
+                return [c for c in chunks if isinstance(c, dict)]
+        return []
+
+    # ------------------------------------------------------------------
     # ① Init anchor database (Section 3.2)
     # ------------------------------------------------------------------
 
@@ -559,9 +581,16 @@ class IKEAAttack:
             query = self.generate_implicit_query(anchor)
 
             # ④ Envoyer au RAG
-            chunks   = self.rag.retrieve(query, top_k=self.top_k)
-            llm_resp = self.rag.generate(query, chunks)
-            response = llm_resp.response
+            retrieval = self.rag.retrieve(query, top_k=self.top_k)
+            chunks    = self._extract_chunks(retrieval)
+            # NaiveRAG expose generate(query, chunks) ; SelfRAG / HHRRAG / GraphRAG
+            # ne l'ont pas → on génère directement via self.llm.
+            if hasattr(self.rag, 'generate'):
+                llm_resp = self.rag.generate(query, chunks)
+            else:
+                prompt   = self.llm.build_rag_prompt(query, chunks)
+                llm_resp = self.llm.generate(prompt)
+            response  = llm_resp.response
 
             # ⑤ Classifier la réponse
             is_refusal  = self._is_refusal(response)
@@ -575,7 +604,7 @@ class IKEAAttack:
                 self.unrelated_set.append((query, response))
 
             # ⑦ Métriques du round
-            ref_text   = "\n\n".join(c["text"] for c in chunks)
+            ref_text   = "\n\n".join(c.get("text", "") for c in chunks if c.get("text"))
             rouge_res  = compute_rouge_l(response, ref_text)
             pii_res    = compute_pii_leakage(response, chunks)
 
@@ -585,7 +614,9 @@ class IKEAAttack:
 
             # Tracking chunks uniques (pour EE)
             for c in chunks:
-                seen_chunk_ids.add(c["chunk_id"])
+                cid = c.get("chunk_id")
+                if cid:
+                    seen_chunk_ids.add(str(cid))
 
             round_result = IKEARoundResult(
                 round_idx=round_idx,

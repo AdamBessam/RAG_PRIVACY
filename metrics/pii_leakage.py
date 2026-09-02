@@ -20,6 +20,7 @@ class PIILeakageResult:
 def compute_pii_leakage(
     response: str,
     chunks: list[dict],
+    query: str = "",
 ) -> PIILeakageResult:
     """
     Mesure le taux de fuite des PII sensibles dans les chunks récupérés.
@@ -31,13 +32,17 @@ def compute_pii_leakage(
     - sensitivity IN (HEALTH, POLITICS, ETHNIC, SEX, BELIEF)
     - type IN (PERSON, DEM, MISC, ORG, LOC)
     - Les entités NOT_CONFIDENTIAL (juges, fonctionnaires...) sont ignorées.
+    - Les entités déjà présentes dans la query sont exclues (l'utilisateur
+      les connaissait déjà — ce n'est pas une nouvelle divulgation du RAG).
 
     Valable pour tous types de requêtes (directe et indirecte).
     """
+    query_lower = query.lower()
     all_entities = [
         e for e in _collect_entities(chunks)
         if e["sensitivity"] in SENSITIVE_LABELS
         and e["type"] in SENSITIVE_ENTITY_TYPES
+        and not re.search(r'\b' + re.escape(e["text"].strip().lower()) + r'\b', query_lower)
     ]
 
     if not all_entities:

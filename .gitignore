@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual Environment
 venv/
+venv_domain_test/
 ENV/
 env/
 .venv
@@ -45,12 +46,17 @@ env/
 # ChromaDB vectorstore
 data/chroma_db/
 data/chroma_db_*
+chroma_db/
+**/chroma_db/
+*.sqlite3
 
 # Neo4j database files (large binary files)
 data/neo4j/
 
 # MLflow
 .mlflow/
+mlruns/
+**/mlruns/
 
 # Raw data
 data/raw/
@@ -79,6 +85,20 @@ experiments_results/
 *.csv
 *.json
 !config.json
+!benchmark_financial/queries.json
+!benchmark_asq_phi/queries.json
+!sage_reference/questions/*.json
+!sage_reference/truth/*.json
+benchmark_financial/checkpoint.json
+!test_contre_mesure_ildpiltest/queries.json
+!test_contre_mesure_ildpiltest/queries.csv
+!test_contre_mesure_ildpiltest/benchmark_results.csv
+!test_contre_mesure_ildpiltest/leaked_cpb_residual.csv
+!test_contre_mesure_ildpiltest/leaked_naive.csv
+!test_contre_mesure_ildpiltest/synthetic_docs.json
+!test_contre_mesure_ildpiltest/doc_pii_surviving.json
+!test_contre_mesure_ildpiltest/cpb_v2_results.csv
+!test_contre_mesure_ildpiltest/sage_benchmark_results.csv
 
 # OS
 .DS_Store
@@ -105,3 +125,77 @@ checkpoints/
 *.checkpoint
 *.pt
 *.pth
+
+
+.claude/
+Miniconda3-latest-Linux-x86_64.sh
+*.sh
+adam-env/
+mon-env/
+data/chroma_zhang/
+data/chroma_zhang_claims/
+data/chroma_chatdoctor/
+data/chroma_chatdoctor_claims/
+*.pickle
+*.flag
+*.db
+*.npy
+
+# Anciennes versions de la contre-mesure et bancs de test internes —
+# gardés en local uniquement, non publiés (seul countermeasure_v6/ l'est).
+countermeasure/
+countermeasure_v3/
+countermeasure_v4/
+countermeasure_v5/
+contre_mesure_nv/
+test_contre_mesure/
+test_contre_mesure_ildpiltest/*
+# ... sauf config.py et _store.py : dépendances réelles de
+# evaluation_cedh_ablation/run_ablation_cumulative_v6.py (dataset + ChromaDB
+# wrapper, sans lien avec les anciennes versions de la contre-mesure).
+!test_contre_mesure_ildpiltest/config.py
+!test_contre_mesure_ildpiltest/_store.py
+benchmark_asq_phi/
+benchmark_financial/
+benchmark_naive_vs_cpb/
+evaluation_chatdoctor/
+evaluation_chatdoctor_openai/
+evaluation_zhang/
+evaluation_zhang_ablation/
+evaluation_zhang_openai/
+interface/
+sage/
+sage_reference/
+_inspect_dataset.py
+_inspect_entities.py
+app.py
+debug_sensitivity.py
+delete.py
+healthcaremagic_export.npz
+mlruns_view.db
+test_gliner_fix.py
+test_nvidia_domain_classifier.py
+
+# evaluation_cedh_ablation/ : seule l'étude v6 est publiée, pas les scripts
+# et résultats de l'ancienne étude v4.
+evaluation_cedh_ablation/run_ablation.py
+evaluation_cedh_ablation/run_ablation_cumulative_reverse.py
+evaluation_cedh_ablation/cumulative_results_reverse_hybrid/
+
+# Caches/résultats data/ des anciennes études (zhang, chatdoctor, financial,
+# v4 leave-one-out) — non publiés, sans lien avec countermeasure_v6.
+data/chatdoctor_eval/
+data/chatdoctor_eval_openai_combo_b7off/
+data/chroma_zhang_test/
+data/zhang_eval/
+data/zhang_eval_openai/
+data/zhang_eval_openai_v2_hybrid_nodedup/
+data/cedh_metrics_by_query_type/
+data/financial_metrics_by_query_type/
+data/cedh_eval_ablation/b0_off/
+data/cedh_eval_ablation/b1_b2_off/
+data/cedh_eval_ablation/b3_b4_off/
+data/cedh_eval_ablation/b6_off/
+data/cedh_eval_ablation/b7_off/
+data/cedh_eval_ablation/full_pipeline/
+data/cedh_eval_ablation/summary.csv
